@@ -31,7 +31,9 @@ def open_site(url):
     subprocess.Popen([
         chromium_path,
         "--remote-debugging-port=9222",
-        f"--user-data-dir={user_data_dir}"
+        f"--user-data-dir={user_data_dir}",
+        "--start-maximized"  # развёрнутое окно
+        # или "--start-fullscreen"  # настоящий полноэкранный режим (F11)
     ])
 
     time.sleep(3)
