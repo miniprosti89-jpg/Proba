@@ -8,41 +8,44 @@ from io import BytesIO
 
 # 1. Открывает сайт
 def open_site(url):
-    # путь к chromium (кроссплатформенный минимум)
     chromium_path = None
 
     if os.name == "posix":  # Linux / Mac
         chromium_path = "chromium"
     elif os.name == "nt":  # Windows
-        chromium_path = "chrome.exe"
+        # Пробуем стандартные пути установки Chrome
+        possible_paths = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                chromium_path = path
+                break
+        if chromium_path is None:
+            raise FileNotFoundError("Chrome не найден. Укажи путь вручную в possible_paths.")
 
-    # запускаем браузер с remote debugging
+    user_data_dir = "/tmp/chrome-debug" if os.name == "posix" else r"C:\Temp\chrome-debug"
+
     subprocess.Popen([
         chromium_path,
         "--remote-debugging-port=9222",
-        "--user-data-dir=/tmp/chrome-debug"
+        f"--user-data-dir={user_data_dir}"
     ])
 
-    # ждём запуск браузера
     time.sleep(3)
 
     p = sync_playwright().start()
-
-    # подключаемся
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
-
     context = browser.contexts[0]
-
-    # создаём новую вкладку
     page = context.new_page()
     page.goto(url)
 
-    # ждём загрузку
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(10000)
 
     return p, browser, page
-
 
 # 2. Делает скриншот
 def take_screenshot(page):
@@ -90,22 +93,18 @@ def open_product_info_and_screenshot(page):
     # -------------------------------
     # 3. Скрин всего блока "О товаре" с сохранением фона
     # -------------------------------
-    description_block = page.get_by_text("Описание").locator("xpath=ancestor::div[3]").first
-    description_block.scroll_into_view_if_needed()
-    page.wait_for_timeout(500)
+    desc_tab = page.get_by_text("Описание").first
+    desc_tab.click()
+    page.wait_for_timeout(1000)
 
-    # Принудительно устанавливаем фон блока перед скриншотом
-    description_block.evaluate("""
-    el => {
-        const style = window.getComputedStyle(el);
-        if (!style.backgroundColor || style.backgroundColor === 'rgba(0, 0, 0, 0)') {
-            el.style.background = 'white';  // Можно указать любой цвет, например '#f5f5f5'
-        }
-    }
-    """)
+    desc_block = page.get_by_text("Основные").locator("xpath=ancestor::div[3]").first
+    desc_block.scroll_into_view_if_needed()
+    page.wait_for_timeout(500)
+    desc_screenshot_bytes = desc_block.screenshot()
+    Image.open(BytesIO(char_screenshot_bytes)).save("description_screenshot.png")
+
 
     # Скриншот блока
-    desc_screenshot_bytes = description_block.screenshot()
     Image.open(BytesIO(desc_screenshot_bytes)).save("description_screenshot.png")
     return "characteristics_tab.png", "description_screenshot.png"
 

@@ -1,0 +1,10 @@
+playwright
+streamlit
+beautifulsoup4
+pillow
+python-dotenv
+torch
+torchvision
+transformers
+scikit-learn
+requests

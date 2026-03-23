@@ -1,0 +1,12 @@
+{
+  "url": "https://www.wildberries.ru/catalog/668966765/detail.aspx",
+  "tovar": "тест_БАД",
+  "desc": "Здесь будет описание товара, если Вито справится с парсингом",
+     "screens": {
+
+        "s1": "word/s1.png",
+
+        "s2": "word/s1.png"
+
+    }
+}
