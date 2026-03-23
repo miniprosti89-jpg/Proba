@@ -5,6 +5,7 @@ import subprocess
 import time
 import os
 from io import BytesIO
+import sys
 
 # 1. Открывает сайт
 def open_site(url):
@@ -32,7 +33,7 @@ def open_site(url):
         chromium_path,
         "--remote-debugging-port=9222",
         f"--user-data-dir={user_data_dir}",
-        "--start-maximized"  # развёрнутое окно
+        "--start-minimized"  # развёрнутое окно
         # или "--start-fullscreen"  # настоящий полноэкранный режим (F11)
     ])
 
@@ -51,7 +52,7 @@ def open_site(url):
 
 # 2. Делает скриншот
 def take_screenshot(page):
-    screenshot_bytes = page.screenshot(full_page=True)
+    screenshot_bytes = page.screenshot(full_page=False)
     return screenshot_bytes
 
 
@@ -117,7 +118,7 @@ def save_image(image_path):
 
 # --- запуск ---
 if __name__ == "__main__":
-    url = input("Вставь ссылку: ")
+    url = sys.argv[1] #ссылка из веб, см ворд мэйн
 
     p, browser, page = open_site(url)
     screenshot = take_screenshot(page)

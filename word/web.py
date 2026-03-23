@@ -36,13 +36,41 @@ with st.container():
         else:
             st.info("🚀 Запуск процесса...")
 
-            # Путь к скрипту в той же папке
+            # НАСТРОЙКА ПУТЕЙ
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            script_path = os.path.join(current_dir, "word_redactor.py")
-
+            parent_dir = os.path.dirname(current_dir)
             # Форматируем критерии в строку "1,2,3"
             criteria_str = ",".join(map(str, sorted(choices)))
 
+
+            #Запуск парсера
+            parcer_path = os.path.join(parent_dir, "Back/parcer.py")
+            command = [sys.executable, parcer_path, url_input, criteria_str]
+
+            try:
+                # 3. Запуск. Используем cp1251 для Windows, чтобы не было ошибок декодирования
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding='cp1251',
+                    errors='replace'
+                )
+
+                if result.returncode == 0:
+                    st.success("✅ Готово!")
+                    st.text_area("Лог выполнения:", result.stdout)
+                else:
+                    st.error("❌ Ошибка при выполнении скрипта")
+                    st.code(result.stderr)
+
+            except Exception as e:
+                st.error(f"Не удалось запустить файл: {e}")
+
+
+
+            #Запуск ворда
+            script_path = os.path.join(current_dir, "word_redactor.py")
             command = [sys.executable, script_path, url_input, criteria_str]
 
             try:

@@ -156,7 +156,7 @@ def main():
     # ЗАГРУЗКА JSON
     report = load_report(report_path)
 
-    # замена url из json введённым (изменить потом)
+    # замена url из json введённым
     report['url'] = url_from_web
 
 
