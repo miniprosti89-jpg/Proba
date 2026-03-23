@@ -84,6 +84,7 @@ def fill_template(template_path: str, report: dict,
         for key in sorted(screens_dict.keys()):
             img_path = screens_dict[key]
                 # width=Mm(160) — ширина почти на весь лист
+            # СДЕЛАЙ ПО ЦЕНТРУ!!!
             context["screenshots"].append(InlineImage(doc, img_path, width=Mm(160)))
 
     doc.render(context)
@@ -144,7 +145,8 @@ def main():
 
     # НАСТРОЙКА ПУТЕЙ
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    report_path = os.path.join(current_dir, "report.json")
+    parent_dir = os.path.dirname(current_dir)
+    report_path = os.path.join(parent_dir, "report.json")
     template_path = os.path.join(current_dir, "template.docx")
 
     if not os.path.exists(template_path):
