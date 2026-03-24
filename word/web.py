@@ -92,3 +92,22 @@ with st.container():
 
             except Exception as e:
                 st.error(f"Не удалось запустить файл: {e}")
+    st.divider()
+    if st.button("🔴 Закрыть приложение"):
+        import streamlit.components.v1 as components
+
+        components.html("""
+            <script>
+                window.top.close();
+            </script>
+        """, height=0)
+
+        import threading
+
+
+        def shutdown():
+            import time
+            time.sleep(1)
+            os._exit(0)
+
+        threading.Thread(target=shutdown, daemon=True).start()

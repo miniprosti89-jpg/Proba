@@ -6,7 +6,7 @@ echo ====================================
 echo  Streamlit App Launcher
 echo ====================================
 
-python --version >nul 2>&1
+py --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python is not installed!
     echo.
@@ -18,5 +18,4 @@ if errorlevel 1 (
 )
 
 
-python launcher.py
-pause
+py launcher.py

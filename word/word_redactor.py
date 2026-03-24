@@ -98,25 +98,6 @@ def fill_template(template_path: str, report: dict,
 def load_report(path: str = "report.json") -> dict:
     if not os.path.exists(path):
         print(f"[ОШИБКА] Файл '{path}' не найден.")
-        example = {
-            "url": "https://www.wildberries.ru/catalog/668966765/detail.aspx?size=898392093",
-            "doc_number": "2026-03-07-17168-БАД",
-            "date": "07.03.2026",
-            "time": "09:52",
-            "city": "г. Мытищи",
-            "officer": "Раева Н.Р.",
-            "officer_position": (
-                "Начальником отдела надзора по гигиене питания "
-                "Управления Роспотребнадзора по Московской области"
-            ),
-            "signer_position": "Начальник отдела надзора по гигиене питания",
-            "product_description": (
-                "«Gaba (Габа) 500 мг + В6 для сна и спокойствия», которая согласно "
-                "информации о товаре содержит гамма-аминомасляную кислоту..."
-            )
-        }
-        print("Пример report.json:")
-        print(json.dumps(example, ensure_ascii=False, indent=2))
         sys.exit(1)
 
     with open(path, encoding="utf-8") as f:
