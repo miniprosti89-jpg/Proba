@@ -10,11 +10,14 @@ import time
 def open_site(url):
     p = sync_playwright().start()
 
+
     # запускаем chromium с remote debugging
     subprocess.Popen([
         "chromium",
         "--remote-debugging-port=9222",
         "--user-data-dir=/tmp/playwright"
+        "--start-maximized"  # развёрнутое окно
+        "--force-device-scale-factor=1"
     ])
 
     time.sleep(3)  # ждём запуск браузера
@@ -23,6 +26,7 @@ def open_site(url):
     context = browser.contexts[0]
     page = context.new_page()
 
+    page.set_viewport_size({"width": 1920, "height": 1080})  #
     page.goto(url)
     page.wait_for_timeout(5000)  # ждём загрузку
 
@@ -31,19 +35,23 @@ def open_site(url):
 
 # 2. Скриншот страницы (без сохранения сразу)
 def make_screenshot(page):
-    screenshot = page.screenshot(full_page=True)
+    screenshot = page.screenshot(full_page=False)
     return screenshot
 
-
 # 3. Добавление времени на скрин
+from PIL import ImageFont
+
 def add_timestamp(screenshot_bytes):
     image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # 👉 указываем размер шрифта
+    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)  # размер 40
+
     # позиция текста
-    draw.text((10, image.height - 30), timestamp, fill="red")
+    draw.text((10, image.height - 50), timestamp, fill="red", font=font)
 
     image.save("final_screenshot.png")
     return "final_screenshot.png"
@@ -59,18 +67,25 @@ def open_product_info_and_screenshot(page):
     from PIL import Image
     from io import BytesIO
 
-    # 1. нажимаем "О товаре"
-    button = page.get_by_text("О товаре")
-    button.wait_for(timeout=10000)
-    button.click()
+    # 1. проверяем — уже открыто или нет
+    panel_title = page.locator("h2", has_text="Характеристики и описание")
 
-    # 2. ждём загрузку
-    page.wait_for_timeout(4000)
+    if not panel_title.is_visible():
+        # если не открыто — кликаем
+        button = page.locator("span", has_text="Характеристики и описание").first
 
-    # 3. делаем скрин ВСЕЙ страницы
-    screenshot_bytes = page.screenshot(full_page=True)
+        button.scroll_into_view_if_needed()
+        button.wait_for(timeout=10000)
+        button.click()
 
-    # 4. сохраняем
+        panel_title.wait_for(timeout=10000)
+
+    # 2. берём контейнер панели
+    container = panel_title.locator("..").locator("..")
+
+    # 3. делаем скрин
+    screenshot_bytes = container.screenshot()
+
     image = Image.open(BytesIO(screenshot_bytes))
     image.save("second_screenshot.png")
 

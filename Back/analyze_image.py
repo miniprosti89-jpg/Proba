@@ -1,6 +1,7 @@
 import pytesseract
 from PIL import Image
 import re
+import json
 
 
 # 1. Чтение текста с изображения
@@ -124,7 +125,7 @@ def is_garbage_text(line):
     return False
 # 3. Сохранение в markdown
 def save_to_md(characteristics, description):
-    with open("result.md", "w", encoding="utf-8") as f:
+    with open("result.json", "w", encoding="utf-8") as f:
         f.write("# Характеристики\n\n")
         for item in characteristics:
             f.write(f"- {item}\n")
@@ -133,7 +134,8 @@ def save_to_md(characteristics, description):
         for item in description:
             f.write(f"{item}\n")
 
-    print("Файл result.md сохранён")
+    print("Файл result.json сохранён")
+
 
 
 # --- MAIN ---
