@@ -1,13 +1,14 @@
 from playwright.sync_api import sync_playwright
 from PIL import Image, ImageDraw, ImageFont
+from io import BytesIO
 from datetime import datetime
 import subprocess
 import time
 import os
-from io import BytesIO
 import sys
 
-# 1. Открывает сайт
+
+# 1. Открытие сайта (через браузер пользователя)
 def open_site(url):
     chromium_path = None
 
@@ -33,7 +34,8 @@ def open_site(url):
         chromium_path,
         "--remote-debugging-port=9222",
         f"--user-data-dir={user_data_dir}",
-        "--start-minimized"  # развёрнутое окно
+        "--start-maximized"  # развёрнутое окно
+        "--force-device-scale-factor=1"
         # или "--start-fullscreen"  # настоящий полноэкранный режим (F11)
     ])
 
@@ -43,6 +45,7 @@ def open_site(url):
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     context = browser.contexts[0]
     page = context.new_page()
+    page.set_viewport_size({"width": 1920, "height": 1080})  #
     page.goto(url)
 
     page.wait_for_load_state("domcontentloaded")
@@ -50,81 +53,71 @@ def open_site(url):
 
     return p, browser, page
 
-# 2. Делает скриншот
-def take_screenshot(page):
-    screenshot_bytes = page.screenshot(full_page=False)
-    return screenshot_bytes
+
+# 2. Скриншот страницы (без сохранения сразу)
+def make_screenshot(page):
+    screenshot = page.screenshot(full_page=False)
+    return screenshot
 
 
-# 3. Добавляет время
-def add_timestamp(image_bytes):
-    image = Image.open(BytesIO(image_bytes))
+# 3. Добавление времени на скрин
+def add_timestamp(screenshot_bytes):
+    image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    font = ImageFont.load_default()
 
-    draw.text((10, image.height - 20), timestamp, fill="red", font=font)
+    # позиция текста
+    draw.text((10, image.height - 30), timestamp, fill="red")
 
-    new_path = "final.png"
-    image.save(new_path)
-
-    return new_path
-
-def open_product_info_and_screenshot(page):
-    # -------------------------------
-    # 1. Вкладка "О товаре"
-    # -------------------------------
-    tab_button = page.get_by_text("О товаре").first
-    tab_button.wait_for(state="visible", timeout=15000)
-    tab_button.click()
-    page.wait_for_timeout(2000)
-
-    # -------------------------------
-    # 2. Скрин характеристик
-    # -------------------------------
-    char_tab = page.get_by_text("Характеристики").first
-    char_tab.click()
-    page.wait_for_timeout(1000)
-
-    characteristics_block = page.get_by_text("Основные").locator("xpath=ancestor::div[3]").first
-    characteristics_block.scroll_into_view_if_needed()
-    page.wait_for_timeout(500)
-    char_screenshot_bytes = characteristics_block.screenshot()
-    Image.open(BytesIO(char_screenshot_bytes)).save("characteristics_tab.png")
-
-    # -------------------------------
-    # 3. Скрин всего блока "О товаре" с сохранением фона
-    # -------------------------------
-    desc_tab = page.get_by_text("Описание").first
-    desc_tab.click()
-    page.wait_for_timeout(1000)
-
-    desc_block = page.get_by_text("Основные").locator("xpath=ancestor::div[3]").first
-    desc_block.scroll_into_view_if_needed()
-    page.wait_for_timeout(500)
-    desc_screenshot_bytes = desc_block.screenshot()
-    Image.open(BytesIO(char_screenshot_bytes)).save("description_screenshot.png")
+    image.save("final_screenshot.png")
+    return "final_screenshot.png"
 
 
-    # Скриншот блока
-    Image.open(BytesIO(desc_screenshot_bytes)).save("description_screenshot.png")
-    return "characteristics_tab.png", "description_screenshot.png"
-
-# 5. Сохраняет результат
+# 4. Сохранение финального изображения (можно расширять)
 def save_image(image_path):
     print(f"Сохранено: {image_path}")
 
 
-# --- запуск ---
-if __name__ == "__main__":
-    url = sys.argv[1] #ссылка из веб, см ворд мэйн
+# 5. Скрин ТОЛЬКО блока характеристик
+def open_product_info_and_screenshot(page):
+    from PIL import Image
+    from io import BytesIO
 
+    # 1. нажимаем "О товаре"
+    button = page.get_by_text("Характеристики и описание")
+    button.wait_for(timeout=10000)
+    button.click()
+
+    # 2. ждём загрузку
+    page.wait_for_timeout(4000)
+
+    # 3. делаем скрин ВСЕЙ страницы
+    screenshot_bytes = page.screenshot(full_page=True)
+
+    # 4. сохраняем
+    image = Image.open(BytesIO(screenshot_bytes))
+    image.save("second_screenshot.png")
+
+    return "second_screenshot.png"
+
+
+# --- MAIN ---
+if __name__ == "__main__":
+
+    url = sys.argv[1] #ссылка из веб, см ворд мэйн
     p, browser, page = open_site(url)
-    screenshot = take_screenshot(page)
+
+    # 1 скрин
+    screenshot = make_screenshot(page)
+
+    # добавляем время
     final_image = add_timestamp(screenshot)
-    second_image = open_product_info_and_screenshot(page)
     save_image(final_image)
+
+    # 2 скрин (характеристики)
+    second_image = open_product_info_and_screenshot(page)
+    print(f"Сохранено: {second_image}")
 
     browser.close()
     p.stop()
