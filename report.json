@@ -4,11 +4,9 @@
   "desc": "Здесь будет описание товара, если Вито справится с парсингом",
      "screens": {
 
-        "s1": "back/final.png",
+        "s1": "final_screenshot.png",
 
-        "s2": "back/characteristics_tab.png",
-
-        "s3": "back/description_screenshot.png"
+        "s2": "second_screenshot.png"
 
     }
 }
