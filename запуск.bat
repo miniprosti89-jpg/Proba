@@ -10,69 +10,68 @@ echo.
 
 set PYTHON=%~dp0_python\python.exe
 
-:: Проверяем что _python\python.exe существует
 if not exist "%PYTHON%" (
-    echo [ОШИБКА] Папка _python не найдена!
+    echo [ERROR] _python folder not found!
     echo.
-    echo Скачайте Python Embeddable Package с https://www.python.org/downloads/windows/
-    echo Выберите "Windows embeddable package" для вашей архитектуры
-    echo Распакуйте содержимое в папку _python рядом с этим файлом
+    echo Please download Python Embeddable Package from:
+    echo https://www.python.org/downloads/windows/
+    echo Choose "Windows embeddable package" for your architecture
+    echo Extract contents into _python folder next to this file
     echo.
     pause
     exit /b 1
 )
 
-:: Шаг 1 — исправляем .pth файл через Python (надёжнее чем PowerShell)
-echo [1/3] Настройка Python...
-"%PYTHON%" -c ^
-    "import glob, os; files = glob.glob(os.path.dirname(r'%PYTHON%') + '/python3*._pth'); [open(f,'w',encoding='utf-8').write(open(f,encoding='utf-8').read().replace('# import site','import site')) for f in files]; print('PTH исправлен:', files)"
+:: Fix .pth file to enable import site
+echo [1/3] Configuring Python...
+"%PYTHON%" -c "import glob, os; files = glob.glob(os.path.dirname(r'%PYTHON%') + '/python3*._pth'); [open(f,'w',encoding='utf-8').write(open(f,encoding='utf-8').read().replace('# import site','import site')) for f in files]; print('PTH fixed:', files)"
 
-:: Шаг 2 — устанавливаем pip если нет
+:: Install pip if missing
 "%PYTHON%" -c "import pip" >nul 2>&1
 if errorlevel 1 (
-    echo [2/3] Устанавливаю pip...
+    echo [2/3] Installing pip...
     if not exist "%~dp0_python\get-pip.py" (
         curl -sS -o "%~dp0_python\get-pip.py" https://bootstrap.pypa.io/get-pip.py
         if errorlevel 1 (
-            echo [ОШИБКА] Не удалось скачать get-pip.py. Проверьте интернет.
+            echo [ERROR] Failed to download get-pip.py. Check internet connection.
             pause & exit /b 1
         )
     )
     "%PYTHON%" "%~dp0_python\get-pip.py" --no-warn-script-location
     if errorlevel 1 (
-        echo [ОШИБКА] Не удалось установить pip.
+        echo [ERROR] Failed to install pip.
         pause & exit /b 1
     )
-    echo pip установлен успешно.
+    echo pip installed successfully.
 ) else (
-    echo [2/3] pip уже установлен.
+    echo [2/3] pip already installed.
 )
 
-:: Шаг 3 — устанавливаем зависимости если streamlit ещё не установлен
+:: Install dependencies if streamlit is missing
 "%PYTHON%" -c "import streamlit" >nul 2>&1
 if errorlevel 1 (
-    echo [3/3] Устанавливаю зависимости из requirements.txt...
-    echo Это может занять долгое время при первом запуске...
+    echo [3/3] Installing dependencies from requirements.txt...
+    echo This may take a long time on first run...
     "%PYTHON%" -m pip install -r "%~dp0requirements.txt" --no-warn-script-location
     if errorlevel 1 (
-        echo [ОШИБКА] Не удалось установить зависимости.
+        echo [ERROR] Failed to install dependencies.
         pause & exit /b 1
     )
-    echo Зависимости установлены.
+    echo Dependencies installed successfully.
 ) else (
-    echo [3/3] Зависимости уже установлены.
+    echo [3/3] Dependencies already installed.
 )
 
-:: Запускаем приложение
+:: Launch the app
 echo.
-echo Запуск приложения...
-echo Откройте браузер: http://localhost:8501
-echo Остановить: Ctrl+C
+echo Starting app...
+echo Open browser at: http://localhost:8501
+echo Press Ctrl+C to stop
 echo ====================================
 "%PYTHON%" launcher.py
 
 if errorlevel 1 (
     echo.
-    echo [ОШИБКА] Приложение завершилось с ошибкой.
+    echo [ERROR] App exited with an error.
     pause
 )
