@@ -28,43 +28,64 @@ def open_site(url):
 
 
 def screenshot_only_modal(page):
-    # 1. Ждем, пока исчезнет "Проверяем браузер" и появится сам сайт.
-    # Замени "body" на какой-то конкретный селектор сайта (например, ".header" или ".product-page")
-  # Ждем появления любой кнопки или картинки
-
-    # 2. Ищем кнопку открытия характеристик
-    # WB/Ozon часто меняют селекторы, поэтому ищем по тексту
-    btn = page.locator("text='Характеристики и описание'").first
-
-    if not btn.is_visible():
-        # Попробуем проскроллить, если кнопки не видно
-        btn.scroll_into_view_if_needed()
-        page.wait_for_timeout(1000)
-
-    btn.click()
-    print("Кнопка нажата. Ищу всплывающее окно...")
-
-    # 3. КЛЮЧЕВОЙ МОМЕНТ: Ищем контейнер всплывающего окна.
-    # Обычно у него есть класс modal, popup, dialog или фиксированное позиционирование.
-    # Ниже универсальный селектор для большинства современных модалок:
-    modal_selector = "div[role='dialog'], .popup-container, .modal-content, .shared-modal"
-
+    """
+    Функция находит кнопку характеристик, кликает по ней,
+    извлекает текст описания и делает скриншот модального окна.
+    """
     try:
-        modal = page.wait_for_selector(modal_selector, state="visible", timeout=10000)
+        # 1. Ищем кнопку открытия характеристик/описания
+        # Используем текст, так как классы могут меняться
+        btn = page.locator("text='Характеристики и описание'").first
 
-        # Небольшая пауза, чтобы окно "долетело" (анимация)
-        page.wait_for_timeout(600)
+        if not btn.is_visible():
+            print("Кнопка не видна, прокручиваю страницу...")
+            btn.scroll_into_view_if_needed()
+            page.wait_for_timeout(1000)
 
-        # 4. Делаем скриншот ТОЛЬКО этого элемента
-        # Playwright сам вырежет его по координатам
+        btn.click()
+        print("Кнопка нажата. Ожидаю появления окна...")
+
+        # 2. Ждем появления модального окна
+        # Универсальный селектор для всплывающих окон
+        modal_selector = "div[role='dialog'], .popup-container, .modal-content, .shared-modal"
+        modal = page.wait_for_selector(modal_selector, state="visible", timeout=15000)
+
+        # Небольшая пауза для завершения анимации открытия
+        page.wait_for_timeout(800)
+
+        # 3. ИЗВЛЕЧЕНИЕ ТЕКСТА
+        # Используем часть вашего класса, которая выглядит наиболее уникальной
+        text_selector = "p.descriptionText--Jq9n2"
+
+        try:
+            # Ждем именно этот параграф внутри модального окна
+            description_element = modal.query_selector(text_selector)
+
+            if description_element:
+                description_text = description_element.inner_text()
+                print("\n=== ТЕКСТ НАЙДЕН ===")
+                print(description_text)
+                print("====================\n")
+
+                # Сохраняем текст в файл
+                with open("description.txt", "w", encoding="utf-8") as text_file:
+                    text_file.write(description_text)
+            else:
+                print("Предупреждение: Элемент с текстом не найден внутри модалки.")
+
+        except Exception as text_err:
+            print(f"Не удалось скопировать текст: {text_err}")
+
+        # 4. СОЗДАНИЕ СКРИНШОТА
+        # Playwright автоматически обрежет изображение по границам модального окна
         screenshot_bytes = modal.screenshot()
-
         with open("only_modal.png", "wb") as f:
             f.write(screenshot_bytes)
 
-        print("Готово! Скриншот окна сохранен в only_modal.png")
+        print("Готово! Скриншот сохранен в 'only_modal.png', текст в 'description.txt'")
+
     except Exception as e:
-        print(f"Не удалось найти модальное окно: {e}")
+        print(f"Критическая ошибка во время работы с окном: {e}")
 
 
 # --- MAIN ---

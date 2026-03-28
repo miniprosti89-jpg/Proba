@@ -4,76 +4,99 @@ from io import BytesIO
 from datetime import datetime
 import subprocess
 import time
+import re
 
-# 1. Открытие сайта (через браузер пользователя)
+
+# 1. Открытие сайта
 def open_site(url):
     p = sync_playwright().start()
 
-
-    # запускаем chromium с remote debugging
     subprocess.Popen([
         "chromium",
         "--remote-debugging-port=9222",
-        "--user-data-dir=/tmp/playwright"
-        "--start-maximized"  # развёрнутое окно
+        "--user-data-dir=/tmp/playwright",
+        "--start-maximized",
         "--force-device-scale-factor=1"
     ])
 
-    time.sleep(3)  # ждём запуск браузера
+    time.sleep(3)
 
     browser = p.chromium.connect_over_cdp("http://localhost:9222")
-    context = browser.contexts[0]
+    context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
 
-    page.set_viewport_size({"width": 1920, "height": 1080})  #
-    page.goto(url)
-    page.wait_for_timeout(5000)  # ждём загрузку
+    page.set_viewport_size({"width": 1920, "height": 1080})
+
+    # Загружаем структуру страницы
+    page.goto(url, wait_until="domcontentloaded")
 
     return p, browser, page
 
 
-# 2. Скриншот страницы (без сохранения сразу)
+# 2. Сохранение названия и URL в TXT файл
+def save_info_to_txt(page, url):
+    selector = 'h2.productTitle--lfc4o'
+    try:
+        # Ждем появления названия товара
+        element = page.wait_for_selector(selector, timeout=10000)
+        product_name = element.inner_text().strip()
+
+        # Сохраняем: первая строка - имя, вторая - ссылка
+        with open("product_name.txt", "w", encoding="utf-8") as f:
+            f.write(f"{product_name}\n")
+            f.write(f"{url}\n")
+
+        print(f"Данные (имя + url) сохранены в product_name.txt")
+    except Exception as e:
+        print(f"Не удалось извлечь название: {e}")
+        # Если название не нашли, сохраним хотя бы ссылку
+        with open("product_name.txt", "w", encoding="utf-8") as f:
+            f.write(f"Название не найдено\n{url}\n")
+
+
+# 3. Создание скриншота
 def make_screenshot(page):
-    screenshot = page.screenshot(full_page=False)
-    return screenshot
+    return page.screenshot(full_page=False)
 
-# 3. Добавление времени на скрин
 
-def add_timestamp(screenshot_bytes):
+# 4. Добавление ТОЛЬКО времени на изображение
+def add_timestamp_only(screenshot_bytes):
     image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 👉 указываем размер шрифта
-    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)  # размер 40
+    try:
+        # Пытаемся загрузить шрифт, иначе используем стандартный
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+    except:
+        font = ImageFont.load_default()
 
-    # позиция текста
-    draw.text((10, image.height - 50), timestamp, fill="red", font=font)
+    # Рисуем только время (красным цветом)
+    draw.text((20, image.height - 60), timestamp, fill="red", font=font)
 
-    image.save("final_screenshot.png")
-    return "final_screenshot.png"
-
-
-# 4. Сохранение финального изображения (можно расширять)
-def save_image(image_path):
-    print(f"Сохранено: {image_path}")
+    save_path = "final_screenshot.png"
+    image.save(save_path)
+    return save_path
 
 
-# --- MAIN ---
+# --- ОСНОВНОЙ ЦИКЛ ---
 if __name__ == "__main__":
     url = input("Вставь ссылку: ")
 
     p, browser, page = open_site(url)
 
-    # 1 скрин
-    screenshot = make_screenshot(page)
+    # Шаг 1: Сохраняем инфо в текстовый файл
+    save_info_to_txt(page, url)
 
-    # добавляем время
-    final_image = add_timestamp(screenshot)
-    save_image(final_image)
+    # Шаг 2: Делаем скрин
+    screenshot_raw = make_screenshot(page)
 
+    # Шаг 3: Наносим время на PNG
+    final_path = add_timestamp_only(screenshot_raw)
 
-    input("Нажми Enter для выхода...")
+    print(f"Скриншот сохранен: {final_path}")
+
+    input("\nНажми Enter для выхода...")
     browser.close()
     p.stop()
