@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 from PIL import Image, ImageDraw, ImageFont
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3.2:3b"
+OLLAMA_MODEL = "qwen2.5:3b"
 
 # --- НАСТРОЙКИ И ПУТИ ---
 
@@ -270,29 +270,20 @@ def strip_heading(text, keyword):
 
 def llm_is_description(text):
     """Спрашивает LLM: является ли текст описанием товара? Возвращает True/False."""
-    prompt = f"""Is the following text a product DESCRIPTION?
+    prompt = f"""You are a helpful assistant that classifies web page content.
+    Analyze the text below and decide if it is a product DESCRIPTION (prose story about the item) or just technical data.
 
-A product DESCRIPTION is a prose text with full sentences describing the product: what it is, how it works, benefits, features.
-Examples of descriptions:
-- "Apple iPhone 17 Pro — это премиальный смартфон, созданный для тех, кто ценит мощность..."
-- "Коллаген – незаменимый для организма компонент, который требует постоянного восполнения..."
+    A product DESCRIPTION is a prose story about the product in full sentences.
+    A text is NOT a description if it is just a list of specs, technical data, or site navigation.
+    EXAMPLES:
+    - "Этот крем с коллагеном глубоко увлажняет кожу, возвращая ей упругость..." -> YES
+    - "Беспроводная док-станция Wireless Charging Dock for Kindle Paperwhite Signature Edition. При помещении ридера на док-станцию, он заряжается автоматически. Зарядка до 100% осуществляется за 2 часа. Ридер можно заряжать, не вынимая из чехла" -> YES
+    - "Вес: 500г. Срок годности: 24 месяца. Сделано в РФ." -> NO
+    - "Доставка завтра. В корзину. Описание. Характеристики." -> NO
 
-A text is a DESCRIPTION only if:
-- It is written in full sentences
-- It explains WHAT the product is AND at least one of:
-  - how it works
-  - benefits
-  - usage
+    Text: {text[:1000]}
 
-
-It is NOT a description if it's:
-- A list of specs: "Weight: 200g", "Type: supplement", "Color: black"
-- Navigation links, prices, delivery info, reviews
-
-Answer only YES or NO.
-
-Text:
-{text[:800]}"""
+    Is this a product description? Answer with only one word: YES or NO."""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
