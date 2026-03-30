@@ -139,7 +139,7 @@ def extract_text_blocks(page):
         const candidates = document.querySelectorAll('p, div, span, section, article, td, li');
         for (const el of candidates) {
             // Пропускаем элементы с большим количеством дочерних элементов (контейнеры)
-            if (el.children.length > 5) continue;
+            if (el.children.length > 1) continue;
 
             const text = el.innerText?.trim();
             if (!text || text.length < 30) continue;
@@ -157,7 +157,7 @@ def extract_text_blocks(page):
                 length: text.length
             });
 
-            if (blocks.length >= 30) break;
+            if (blocks.length >= 50) break;
         }
         return blocks;
     }""")
@@ -252,56 +252,232 @@ If none of these blocks is a description, reply with: NONE"""
     return None
 
 
-def find_description_by_heading(page):
-    """Ищет заголовок 'Описание' на странице и возвращает его родительский контейнер."""
-    result = page.evaluate("""() => {
-        const headings = document.querySelectorAll('h1, h2, h3, h4');
-        for (const h of headings) {
-            if (h.innerText?.trim().match(/^Описание/i)) {
-                // Ищем родительский контейнер с достаточным количеством текста
-                let el = h.parentElement;
-                for (let i = 0; i < 6; i++) {
-                    if (!el) break;
-                    if (el.innerText?.length > 300) {
-                        // Строим уникальный селектор
-                        if (el.id) return '#' + el.id;
-                        if (el.className) {
-                            const cls = el.className.trim().split(/\\s+/).filter(c => c.length > 0)[0];
-                            if (cls) return el.tagName.toLowerCase() + '.' + cls;
-                        }
-                        // По позиции среди родителей
-                        const parent = el.parentElement;
-                        if (parent) {
-                            const idx = [...parent.children].indexOf(el) + 1;
-                            return el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
-                        }
-                    }
-                    el = el.parentElement;
+DESCRIPTION_KEYWORDS = [
+    "Описание",
+    "Характеристики и описание",
+    "О товаре",
+    "Описание товара",
+    "Характеристики",
+]
+
+
+def strip_heading(text, keyword):
+    """Убирает строку с ключевым словом из начала текста."""
+    lines = text.split('\n')
+    cleaned = [l for l in lines if l.strip().lower() != keyword.lower()]
+    return '\n'.join(cleaned).strip()
+
+
+def llm_is_description(text):
+    """Спрашивает LLM: является ли текст описанием товара? Возвращает True/False."""
+    prompt = f"""Is the following text a product DESCRIPTION?
+
+A product DESCRIPTION is a prose text with full sentences describing the product: what it is, how it works, benefits, features.
+Examples of descriptions:
+- "Apple iPhone 17 Pro — это премиальный смартфон, созданный для тех, кто ценит мощность..."
+- "Коллаген – незаменимый для организма компонент, который требует постоянного восполнения..."
+
+A text is a DESCRIPTION only if:
+- It is written in full sentences
+- It explains WHAT the product is AND at least one of:
+  - how it works
+  - benefits
+  - usage
+
+
+It is NOT a description if it's:
+- A list of specs: "Weight: 200g", "Type: supplement", "Color: black"
+- Navigation links, prices, delivery info, reviews
+
+Answer only YES or NO.
+
+Text:
+{text[:800]}"""
+    try:
+        resp = requests.post(OLLAMA_URL, json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0}
+        }, timeout=60)
+        resp.raise_for_status()
+        answer = resp.json()["response"].strip().upper()
+        print(f"  LLM-валидация: {answer[:20]}")
+        return answer.startswith("YES")
+    except Exception as e:
+        print(f"  Ошибка LLM-валидации: {e}")
+        return False
+
+
+def find_element_by_keyword(page, keyword):
+    """Ищет элемент с ключевым словом на странице.
+    Возвращает dict: {type: 'heading'|'trigger', selector: str, text: str} или None."""
+    return page.evaluate("""(keyword) => {
+        function buildSelector(el) {
+            if (el.id) return '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+                const classes = el.className.trim().split(/\\s+/).filter(c => c.length > 0 && !c.match(/^\\d/));
+                const tag = el.tagName.toLowerCase();
+                const parent = el.parentElement;
+                if (parent) {
+                    const idx = [...parent.children].indexOf(el) + 1;
+                    // Используем все классы + nth-child для уникальности
+                    const clsSel = classes.length > 0 ? '.' + classes.join('.') : '';
+                    return tag + clsSel + ':nth-child(' + idx + ')';
                 }
+                if (classes.length > 0) return tag + '.' + classes.join('.');
+            }
+            const parent = el.parentElement;
+            if (parent) {
+                const idx = [...parent.children].indexOf(el) + 1;
+                return el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
+            }
+            return el.tagName.toLowerCase();
+        }
+
+        function isProse(text) {
+            // Проверяем: есть ли в тексте хотя бы 2 предложения (точки с пробелом/концом)
+            const sentences = (text.match(/[.!?]\\s/g) || []).length;
+            if (sentences < 1) return false;
+            // Не характеристики: нет частых "ключ\\nзначение" паттернов
+            const lines = text.split('\\n').filter(l => l.trim());
+            const shortLines = lines.filter(l => l.trim().length < 40).length;
+            return shortLines / lines.length < 0.6;
+        }
+
+        function findProseChild(container) {
+            // Ищем внутри контейнера первый элемент с прозаическим текстом
+            const candidates = container.querySelectorAll('div, p, section, article');
+            for (const ch of candidates) {
+                const text = (ch.innerText || '').trim();
+                if (text.length < 100) continue;
+                if (isProse(text)) {
+                    // Проверяем что это не весь контейнер (нужен более узкий элемент)
+                    if (ch === container) continue;
+                    return ch;
+                }
+            }
+            return null;
+        }
+
+        const kw = keyword.toLowerCase();
+        const all = document.querySelectorAll('*');
+
+        for (const el of all) {
+            if (el.children.length > 3) continue;
+            const t = (el.innerText || '').trim();
+            if (!t) continue;
+            if (!el.offsetParent) continue;
+
+            const tag = el.tagName.toLowerCase();
+            const cursor = getComputedStyle(el).cursor;
+            const role = (el.getAttribute('role') || '').toLowerCase();
+
+            const tLower = t.toLowerCase();
+            const keywordInText = tLower.includes(kw);
+            const textIsShort = t.length <= 150;
+
+            // Это кнопка/ссылка?
+            if (['button', 'a', 'summary'].includes(tag) || cursor === 'pointer' || ['button','tab','link'].includes(role)) {
+                // Для кнопок: ключевое слово должно содержаться в тексте, текст должен быть коротким
+                if (keywordInText && textIsShort) {
+                    return { type: 'trigger', selector: buildSelector(el), text: t };
+                }
+                continue;
+            }
+
+            // Для заголовков: точное совпадение или начало текста
+            if (['h1','h2','h3','h4','h5'].includes(tag)) {
+                const exactMatch = tLower === kw;
+                const startsWithKeyword = tLower.startsWith(kw);
+                
+                if (!exactMatch && !startsWithKeyword) continue;
+
+                // Ищем контейнер с текстом > 200 символов
+                let container = el.parentElement;
+                for (let i = 0; i < 6; i++) {
+                    if (!container) break;
+                    if ((container.innerText || '').length > 200) break;
+                    container = container.parentElement;
+                }
+                if (!container) continue;
+
+                // Ищем внутри контейнера первый блок с прозой (не весь контейнер)
+                const proseEl = findProseChild(container);
+                if (proseEl) {
+                    return {
+                        type: 'heading',
+                        selector: buildSelector(proseEl),
+                        text: (proseEl.innerText || '').trim()
+                    };
+                }
+
+                // Фоллбэк: весь контейнер
+                return {
+                    type: 'heading',
+                    selector: buildSelector(container),
+                    text: (container.innerText || '').trim()
+                };
+            }
+        }
+        return null;
+    }""", keyword)
+
+
+def get_text_after_click(page):
+    """После клика ищет заголовок 'Описание' на странице и берёт текст после него."""
+    # Ищем любой ВИДИМЫЙ заголовок "Описание" на странице напрямую,
+    # без привязки к типу контейнера (модалка/panel/drawer — неважно)
+    desc = page.evaluate("""() => {
+        function buildSelector(el) {
+            if (el.id) return '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+                const classes = el.className.trim().split(/\\s+/).filter(c => c.length > 0);
+                const tag = el.tagName.toLowerCase();
+                const parent = el.parentElement;
+                if (parent) {
+                    const idx = [...parent.children].indexOf(el) + 1;
+                    const clsSel = classes.length > 0 ? '.' + classes.join('.') : '';
+                    return tag + clsSel + ':nth-child(' + idx + ')';
+                }
+                if (classes.length > 0) return tag + '.' + classes.join('.');
+            }
+            const parent = el.parentElement;
+            if (parent) {
+                const idx = [...parent.children].indexOf(el) + 1;
+                return el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
+            }
+            return el.tagName.toLowerCase();
+        }
+
+        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
+            if (!(h.innerText||'').trim().match(/^Описание$/i)) continue;
+            if (!h.offsetParent) continue;  // только видимые
+
+            // Пробуем следующий sibling с достаточным текстом
+            let sibling = h.nextElementSibling;
+            while (sibling) {
+                const text = (sibling.innerText || '').trim();
+                if (text.length > 100) {
+                    h.scrollIntoView({behavior:'instant', block:'start'});
+                    return { selector: buildSelector(sibling), text: text };
+                }
+                sibling = sibling.nextElementSibling;
+            }
+
+            // Фоллбэк — родительский контейнер
+            const section = h.parentElement;
+            if (section && (section.innerText||'').trim().length > 100) {
+                h.scrollIntoView({behavior:'instant', block:'start'});
+                return { selector: buildSelector(section), text: (section.innerText||'').trim() };
             }
         }
         return null;
     }""")
-    return result
+    if desc and desc.get("text"):
+        return desc
 
-
-def click_description_trigger(page):
-    """Ищет кликабельный элемент, ведущий к описанию, и кликает его."""
-    # Ищем любой элемент с текстом про описание — включая div с cursor:pointer
-    triggers = page.locator("text=/Перейти к описани|Описание товара|Характеристики и описание|О товаре/i")
-    for i in range(min(triggers.count(), 5)):
-        btn = triggers.nth(i)
-        if not btn.is_visible():
-            continue
-        cursor = btn.evaluate("el => getComputedStyle(el).cursor")
-        tag = btn.evaluate("el => el.tagName.toLowerCase()")
-        if tag in ("button", "a", "summary") or cursor == "pointer":
-            print(f"Найден триггер описания ({tag}, cursor={cursor}) — кликаем...")
-            btn.scroll_into_view_if_needed()
-            btn.click()
-            page.wait_for_timeout(2000)
-            return True
-    return False
+    return None
 
 
 def render_text_as_image(text, path, img_width=900):
@@ -373,116 +549,112 @@ def screenshot_container(page, selector, path):
     return render_text_as_image(text, path)
 
 
+def save_description(text, path="description_section.png"):
+    """Сохраняет текст в description.txt и рендерит PNG."""
+    with open("description.txt", "w", encoding="utf-8") as f:
+        f.write(text)
+    render_text_as_image(text, path)
+    print(f"Описание сохранено ({len(text)} символов)")
+
+
 def process_modal_info(page):
-    """Универсальный поиск описания товара."""
+    """Ищет описание товара перебором ключевых слов с LLM-валидацией."""
     try:
-        # Шаг 1: ищем заголовок "Описание" прямо на странице (описание уже в DOM)
-        print("Ищем заголовок 'Описание' на странице...")
-        selector = find_description_by_heading(page)
-        if selector:
-            print(f"Найден контейнер описания: {selector}")
-            if screenshot_container(page, selector, "description_section.png"):
-                return
+        clicked_keywords = set()  # не кликать одно и то же дважды
 
-        # Шаг 2: ищем триггер-кнопку и кликаем (описание может быть скрыто)
-        print("Ищем кнопку/ссылку для перехода к описанию...")
-        clicked = click_description_trigger(page)
+        for keyword in DESCRIPTION_KEYWORDS:
+            print(f"\n--- Пробуем ключевое слово: '{keyword}' ---")
 
-        if clicked:
-            # После клика снова ищем заголовок
-            selector = find_description_by_heading(page)
-            if selector:
-                print(f"После клика найден контейнер: {selector}")
-                if screenshot_container(page, selector, "description_section.png"):
+            result = find_element_by_keyword(page, keyword)
+            if not result:
+                print(f"  Элемент '{keyword}' не найден на странице.")
+                continue
+
+            print(f"  Найден элемент типа '{result['type']}'")
+
+            if result["type"] == "heading":
+                # Описание уже видно на странице
+                text = result.get("text", "")
+                text_for_llm = strip_heading(text, keyword)
+                if len(text_for_llm) < 100:
+                    print(f"  Текст слишком короткий ({len(text_for_llm)} символов), пропускаем.")
+                    continue
+                print(f"  Текст: {text_for_llm[:80]}...")
+                if llm_is_description(text_for_llm):
+                    print("  LLM: это описание ✓")
+                    save_description(text)
                     return
+                else:
+                    print("  LLM: не описание, пробуем дальше.")
 
-            # Может быть модалка
-            modal = page.locator("div[role='dialog'], [class*='modal'], [class*='popup']").first
-            if modal.count() > 0 and modal.is_visible():
-                # Ищем секцию с описанием внутри модалки (WB-паттерн: h3 "Описание" → parent section)
-                desc_section = page.evaluate("""() => {
-                    const headings = document.querySelectorAll('h2, h3, h4');
-                    for (const h of headings) {
-                        if (h.innerText?.trim().match(/^Описание$/i)) {
-                            const section = h.parentElement;
-                            // Скроллим секцию в видимую область внутри скролл-контейнера
-                            h.scrollIntoView({behavior: 'instant', block: 'start'});
-                            if (section.id) return '#' + section.id;
-                            if (section.className) {
-                                const cls = section.className.trim().split(/\\s+/)[0];
-                                if (cls) return section.tagName.toLowerCase() + '.' + cls;
-                            }
-                            // Если нет класса — строим путь через родителя
-                            const parent = section.parentElement;
-                            if (parent) {
-                                const idx = [...parent.children].indexOf(section) + 1;
-                                return section.tagName.toLowerCase() + ':nth-child(' + idx + ')';
-                            }
-                        }
-                    }
-                    return null;
-                }""")
+            elif result["type"] == "trigger":
+                if keyword in clicked_keywords:
+                    continue
+                clicked_keywords.add(keyword)
 
-                if desc_section:
-                    print(f"Найдена секция описания внутри модалки: {desc_section}")
+                print(f"  Кликаем триггер...")
+                el = page.locator(result["selector"]).first
+                if el.count() == 0:
+                    print("  Триггер не найден в DOM.")
+                    continue
+                try:
+                    el.scroll_into_view_if_needed(timeout=3000)
                     page.wait_for_timeout(500)
-                    if screenshot_container(page, desc_section, "description_section.png"):
-                        return
+                    el.click(force=True, timeout=5000)
+                except Exception as click_err:
+                    print(f"  Ошибка клика: {click_err}")
+                    continue
+                page.wait_for_timeout(2000)
 
-                # Фоллбэк: берём текст всей модалки и рендерим
-                text = modal.inner_text().strip()
-                if text:
-                    with open("description.txt", "w", encoding="utf-8") as f:
-                        f.write(text)
-                    render_text_as_image(text, "only_modal.png")
-                return
+                after = get_text_after_click(page)
+                if not after or not after.get("text"):
+                    print("  После клика текст не найден.")
+                    continue
 
-        # Шаг 3: фоллбэк — извлекаем текстовые блоки и спрашиваем LLM
-        print("Извлекаем текстовые блоки со страницы (фоллбэк)...")
+                text = after["text"]
+                text_for_llm = strip_heading(text, keyword)
+                if len(text_for_llm) < 100:
+                    print(f"  Текст слишком короткий ({len(text_for_llm)} символов), пропускаем.")
+                    continue
+
+                print(f"  Текст после клика: {text_for_llm[:80]}...")
+                if llm_is_description(text_for_llm):
+                    print("  LLM: это описание ✓")
+                    # Если есть селектор — рендерим через него, иначе напрямую
+                    if after.get("selector"):
+                        screenshot_container(page, after["selector"], "description_section.png")
+                    else:
+                        save_description(text)
+                    return
+                else:
+                    print("  LLM: не описание, пробуем дальше.")
+                    # Закрываем модалку если открылась
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(500)
+
+        # Фоллбэк: текстовые блоки + эвристика + LLM
+        print("\n--- Фоллбэк: поиск по текстовым блокам ---")
         blocks = extract_text_blocks(page)
-        print(f"Найдено {len(blocks)} текстовых блоков")
-
-        if not blocks:
-            print("Текстовые блоки не найдены.")
-            page.screenshot(path="description_section.png", full_page=True)
-            return
-
-        print("Фильтруем блоки эвристикой...")
         desc_blocks = filter_description_blocks(blocks)
 
         if not desc_blocks:
-            print("Ни один блок не похож на описание. Сохраняем полный скриншот.")
+            print("Описание не найдено.")
             page.screenshot(path="description_section.png", full_page=True)
             return
 
         if len(desc_blocks) == 1:
             block = desc_blocks[0]
-            print(f"Один подходящий блок — берём без LLM: {block['preview'][:80]}...")
         else:
-            print(f"Осталось {len(desc_blocks)} кандидатов, спрашиваем LLM...")
             for i, b in enumerate(desc_blocks):
                 b["index"] = i
             chosen = ask_llm_to_pick(desc_blocks)
-            if chosen is not None and chosen < len(desc_blocks):
-                block = desc_blocks[chosen]
-                print(f"LLM выбрала блок [{chosen}]: {block['preview'][:80]}...")
-            else:
-                block = desc_blocks[0]
-                print(f"LLM не определилась, берём лучший по score: {block['preview'][:80]}...")
+            block = desc_blocks[chosen] if chosen is not None and chosen < len(desc_blocks) else desc_blocks[0]
 
-        element = page.locator(block["selector"]).first
-        if element.count() > 0 and element.is_visible():
-            element.scroll_into_view_if_needed()
-            page.wait_for_timeout(500)
-            element.screenshot(path="description_section.png")
-            text = element.inner_text()
-            if text.strip():
-                with open("description.txt", "w", encoding="utf-8") as f:
-                    f.write(text.strip())
-                print("Текст описания сохранен в description.txt")
-            print("Скриншот описания сохранен в description_section.png")
+        text = block["preview"]
+        if llm_is_description(text):
+            screenshot_container(page, block["selector"], "description_section.png")
         else:
-            print(f"Элемент '{block['selector']}' не найден. Сохраняем полный скриншот.")
+            print("Описание не найдено даже в фоллбэке.")
             page.screenshot(path="description_section.png", full_page=True)
 
     except Exception as e:
