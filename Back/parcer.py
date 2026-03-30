@@ -283,7 +283,8 @@ def llm_is_description(text):
 
     Text: {text[:1000]}
 
-    Is this a product description? Answer with only one word: YES or NO."""
+    Is this a product description?"""
+    # Answer with only one word: YES or NO.
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -293,7 +294,7 @@ def llm_is_description(text):
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip().upper()
-        print(f"  LLM-валидация: {answer[:20]}")
+        print(f"  LLM-валидация: {answer[:100]}")
         return answer.startswith("YES")
     except Exception as e:
         print(f"  Ошибка LLM-валидации: {e}")
@@ -354,6 +355,7 @@ def find_element_by_keyword(page, keyword):
         const kw = keyword.toLowerCase();
         const all = document.querySelectorAll('*');
 
+        // Проход 1: ищем заголовки (heading) — безопасно, текст уже на странице
         for (const el of all) {
             if (el.children.length > 3) continue;
             const t = (el.innerText || '').trim();
@@ -361,21 +363,7 @@ def find_element_by_keyword(page, keyword):
             if (!el.offsetParent) continue;
 
             const tag = el.tagName.toLowerCase();
-            const cursor = getComputedStyle(el).cursor;
-            const role = (el.getAttribute('role') || '').toLowerCase();
-
             const tLower = t.toLowerCase();
-            const keywordInText = tLower.includes(kw);
-            const textIsShort = t.length <= 150;
-
-            // Это кнопка/ссылка?
-            if (['button', 'a', 'summary'].includes(tag) || cursor === 'pointer' || ['button','tab','link'].includes(role)) {
-                // Для кнопок: ключевое слово должно содержаться в тексте, текст должен быть коротким
-                if (keywordInText && textIsShort) {
-                    return { type: 'trigger', selector: buildSelector(el), text: t };
-                }
-                continue;
-            }
 
             // Для заголовков: точное совпадение или начало текста
             if (['h1','h2','h3','h4','h5'].includes(tag)) {
@@ -411,6 +399,28 @@ def find_element_by_keyword(page, keyword):
                 };
             }
         }
+
+        // Проход 2: ищем триггеры (кнопки/ссылки) — только если заголовок не найден
+        for (const el of all) {
+            if (el.children.length > 3) continue;
+            const t = (el.innerText || '').trim();
+            if (!t) continue;
+            if (!el.offsetParent) continue;
+
+            const tag = el.tagName.toLowerCase();
+            const cursor = getComputedStyle(el).cursor;
+            const role = (el.getAttribute('role') || '').toLowerCase();
+            const tLower = t.toLowerCase();
+            const keywordInText = tLower.includes(kw);
+            const textIsShort = t.length <= 150;
+
+            if (['button', 'a', 'summary'].includes(tag) || cursor === 'pointer' || ['button','tab','link'].includes(role)) {
+                if (keywordInText && textIsShort) {
+                    return { type: 'trigger', selector: buildSelector(el), text: t };
+                }
+            }
+        }
+
         return null;
     }""", keyword)
 
