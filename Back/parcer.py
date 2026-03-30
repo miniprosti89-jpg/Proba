@@ -10,9 +10,11 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 from PIL import Image, ImageDraw, ImageFont
 
+#from llama_cpp import Llama
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen2.5:3b"
 
+#llm = Llama(model_path="./qwen2.5-3b.gguf")
 # --- НАСТРОЙКИ И ПУТИ ---
 
 
@@ -558,6 +560,53 @@ def save_description(text, path="description_section.png"):
     print(f"Описание сохранено ({len(text)} символов)")
 
 
+def screenshot_panel(page, path="description_section.png"):
+    """Делает реальный скриншот браузера панели с описанием/характеристиками.
+    Находит видимый заголовок 'Описание' или 'Характеристики', поднимается до
+    ближайшего большого контейнера и снимает его через Playwright clip."""
+    rect = page.evaluate("""() => {
+        const keywords = ['описание', 'характеристики'];
+        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
+            const text = (h.innerText || '').trim().toLowerCase();
+            if (!keywords.some(k => text.includes(k))) continue;
+            if (!h.offsetParent) continue;
+
+            // Поднимаемся до ближайшего достаточно крупного контейнера
+            let el = h.parentElement;
+            while (el && el !== document.body) {
+                const r = el.getBoundingClientRect();
+                if (r.width > 200 && r.height > 300) {
+                    return { x: r.left, y: r.top, width: r.width, height: r.height };
+                }
+                el = el.parentElement;
+            }
+        }
+        return null;
+    }""")
+
+    if rect:
+        # Обрезаем за пределы viewport
+        vp = page.viewport_size or {"width": 1280, "height": 800}
+        clip = {
+            "x":      max(0, rect["x"]),
+            "y":      max(0, rect["y"]),
+            "width":  min(rect["width"],  vp["width"]  - max(0, rect["x"])),
+            "height": min(rect["height"], vp["height"] - max(0, rect["y"])),
+        }
+        page.screenshot(path=path, clip=clip)
+        print(f"Скриншот панели сохранён: {path}")
+        return True
+
+    # Фоллбэк — правая половина экрана (где WB рисует боковую панель)
+    vp = page.viewport_size or {"width": 1280, "height": 800}
+    half_x = vp["width"] // 2
+    page.screenshot(path=path, clip={"x": half_x, "y": 0,
+                                      "width": vp["width"] - half_x,
+                                      "height": vp["height"]})
+    print(f"Скриншот панели (fallback) сохранён: {path}")
+    return False
+
+
 def process_modal_info(page):
     """Ищет описание товара перебором ключевых слов с LLM-валидацией."""
     try:
@@ -583,7 +632,9 @@ def process_modal_info(page):
                 print(f"  Текст: {text_for_llm[:80]}...")
                 if llm_is_description(text_for_llm):
                     print("  LLM: это описание ✓")
-                    save_description(text)
+                    with open("description.txt", "w", encoding="utf-8") as f:
+                        f.write(text)
+                    screenshot_panel(page, "description_section.png")
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
@@ -621,11 +672,9 @@ def process_modal_info(page):
                 print(f"  Текст после клика: {text_for_llm[:80]}...")
                 if llm_is_description(text_for_llm):
                     print("  LLM: это описание ✓")
-                    # Если есть селектор — рендерим через него, иначе напрямую
-                    if after.get("selector"):
-                        screenshot_container(page, after["selector"], "description_section.png")
-                    else:
-                        save_description(text)
+                    with open("description.txt", "w", encoding="utf-8") as f:
+                        f.write(text)
+                    screenshot_panel(page, "description_section.png")
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
@@ -653,7 +702,9 @@ def process_modal_info(page):
 
         text = block["preview"]
         if llm_is_description(text):
-            screenshot_container(page, block["selector"], "description_section.png")
+            with open("description.txt", "w", encoding="utf-8") as f:
+                f.write(text)
+            screenshot_panel(page, "description_section.png")
         else:
             print("Описание не найдено даже в фоллбэке.")
             page.screenshot(path="description_section.png", full_page=True)
