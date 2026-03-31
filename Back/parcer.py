@@ -698,51 +698,66 @@ def screenshot_full_description(page, path="description_section.png"):
     return True
 
 
-def screenshot_description_and_specs(page, path="description_section.png"):
-    """Два скриншота: начало и конец панели (или страницы если панели нет).
-    Позиционирование на нужный раздел — задача вызывающего кода.
+def screenshot_description_and_specs(page, path="description_section.png", selector=None):
+    """Два скриншота: начало и конец раздела.
+
+    selector задан (heading-режим):
+        Скролим к найденному элементу, поднимаемся на 100px (чтобы захватить характеристики
+        выше), делаем скрин, опускаемся на 400px, делаем скрин.
+
+    selector=None (panel-режим):
+        Находим самый большой видимый скролл-контейнер (панель), скролим его в начало,
+        делаем скрин, скролим в конец, делаем скрин.
     """
     base, ext = path.rsplit(".", 1) if "." in path else (path, "png")
     path_start = f"{base}_start.{ext}"
     path_end   = f"{base}_end.{ext}"
 
-    FIND_PANEL_JS = """() => {
-        let best = null, bestArea = 0;
-        for (const el of document.querySelectorAll('*')) {
-            if (el === document.body || el === document.documentElement) continue;
-            const oy = getComputedStyle(el).overflowY;
-            if (oy !== 'auto' && oy !== 'scroll') continue;
-            if (el.scrollHeight <= el.clientHeight + 50) continue;
-            const r = el.getBoundingClientRect();
-            if (r.width === 0 || r.height < 200) continue;
-            if (r.bottom < 0 || r.top > window.innerHeight) continue;
-            const area = r.width * r.height;
-            if (area > bestArea) { bestArea = area; best = el; }
-        }
-        return best;
-    }"""
+    if selector:
+        # === Heading-режим: описание на основной странице ===
+        page.locator(selector).first.scroll_into_view_if_needed(timeout=3000)
+        page.evaluate("window.scrollBy(0, -100)")
+        page.wait_for_timeout(400)
 
-    # Прокручиваем в начало
-    page.evaluate(f"""() => {{
-        const panel = ({FIND_PANEL_JS})();
-        if (panel) panel.scrollTop = 0;
-        else window.scrollTo(0, 0);
-    }}""")
-    page.wait_for_timeout(400)
+        page.screenshot(path=path_start)
+        print(f"Скриншот (начало) сохранён: {path_start}")
 
-    page.screenshot(path=path_start)
-    print(f"Скриншот (начало) сохранён: {path_start}")
+        page.evaluate("window.scrollBy(0, 400)")
+        page.wait_for_timeout(400)
 
-    # Прокручиваем в конец
-    page.evaluate(f"""() => {{
-        const panel = ({FIND_PANEL_JS})();
-        if (panel) panel.scrollTop = panel.scrollHeight;
-        else window.scrollTo(0, document.body.scrollHeight);
-    }}""")
-    page.wait_for_timeout(400)
+        page.screenshot(path=path_end)
+        print(f"Скриншот (конец) сохранён: {path_end}")
 
-    page.screenshot(path=path_end)
-    print(f"Скриншот (конец) сохранён: {path_end}")
+    else:
+        # === Panel-режим: описание в боковой панели ===
+        FIND_PANEL_JS = """() => {
+            let best = null, bestArea = 0;
+            for (const el of document.querySelectorAll('*')) {
+                if (el === document.body || el === document.documentElement) continue;
+                const oy = getComputedStyle(el).overflowY;
+                if (oy !== 'auto' && oy !== 'scroll') continue;
+                if (el.scrollHeight <= el.clientHeight + 50) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height < 200) continue;
+                if (r.bottom < 0 || r.top > window.innerHeight) continue;
+                const area = r.width * r.height;
+                if (area > bestArea) { bestArea = area; best = el; }
+            }
+            return best;
+        }"""
+
+        page.evaluate(f"(() => {{ const p = ({FIND_PANEL_JS})(); if (p) p.scrollTop = 0; else window.scrollTo(0, 0); }})()")
+        page.wait_for_timeout(400)
+
+        page.screenshot(path=path_start)
+        print(f"Скриншот панели (начало) сохранён: {path_start}")
+
+        page.evaluate(f"(() => {{ const p = ({FIND_PANEL_JS})(); if (p) p.scrollTop = p.scrollHeight; else window.scrollTo(0, document.body.scrollHeight); }})()")
+        page.wait_for_timeout(400)
+
+        page.screenshot(path=path_end)
+        print(f"Скриншот панели (конец) сохранён: {path_end}")
+
     return True
 
 
@@ -773,7 +788,7 @@ def process_modal_info(page):
                     print("  LLM: это описание ✓")
                     with open("description.txt", "w", encoding="utf-8") as f:
                         f.write(text)
-                    screenshot_description_and_specs(page, "description_section.png")
+                    screenshot_description_and_specs(page, "description_section.png", selector=result["selector"])
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
@@ -813,10 +828,6 @@ def process_modal_info(page):
                     print("  LLM: это описание ✓")
                     with open("description.txt", "w", encoding="utf-8") as f:
                         f.write(text)
-                    # Закрываем модалку — текст уже сохранён, скриншот делаем с основной страницы,
-                    # чтобы захватить и характеристики, и описание вместе
-                    #page.keyboard.press("Escape")
-                    page.wait_for_timeout(700)
                     screenshot_description_and_specs(page, "description_section.png")
                     return
                 else:
