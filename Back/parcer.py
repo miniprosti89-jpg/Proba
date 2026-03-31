@@ -262,18 +262,6 @@ DESCRIPTION_KEYWORDS = [
     "Характеристики",
 ]
 
-# Ключевые слова для поиска разделов при скриншоте (в нижнем регистре)
-SPEC_KEYWORDS_SCREENSHOT = [
-    "характеристики",
-    "характеристики и описание",
-    "свойства",
-    "параметры",
-]
-DESC_KEYWORDS_SCREENSHOT = [
-    "описание",
-    "описание товара",
-    "о товаре",
-]
 
 
 def strip_heading(text, keyword):
@@ -711,175 +699,50 @@ def screenshot_full_description(page, path="description_section.png"):
 
 
 def screenshot_description_and_specs(page, path="description_section.png"):
-    """Снимает скриншот, охватывающий оба раздела: характеристики и описание.
-    В txt по-прежнему сохраняется только описание — функция отвечает исключительно за скриншот.
-
-    - fullpage (Ozon и др.): ищет общий контейнер-предок обоих заголовков → full_page + кроп.
-    - panel (WB и др.): scroll+stitch, начиная с заголовка характеристик.
-    - Если характеристики не найдены — ведёт себя как screenshot_full_description.
+    """Два скриншота: начало и конец панели (или страницы если панели нет).
+    Позиционирование на нужный раздел — задача вызывающего кода.
     """
-    info = page.evaluate("""([specKws, descKws]) => {
-        function getScrollContainer(el) {
-            let cur = el.parentElement;
-            while (cur && cur !== document.body) {
-                const oy = getComputedStyle(cur).overflowY;
-                if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight)
-                    return cur;
-                cur = cur.parentElement;
-            }
-            return null;
+    base, ext = path.rsplit(".", 1) if "." in path else (path, "png")
+    path_start = f"{base}_start.{ext}"
+    path_end   = f"{base}_end.{ext}"
+
+    FIND_PANEL_JS = """() => {
+        let best = null, bestArea = 0;
+        for (const el of document.querySelectorAll('*')) {
+            if (el === document.body || el === document.documentElement) continue;
+            const oy = getComputedStyle(el).overflowY;
+            if (oy !== 'auto' && oy !== 'scroll') continue;
+            if (el.scrollHeight <= el.clientHeight + 50) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height < 200) continue;
+            if (r.bottom < 0 || r.top > window.innerHeight) continue;
+            const area = r.width * r.height;
+            if (area > bestArea) { bestArea = area; best = el; }
         }
+        return best;
+    }"""
 
-        function findHeading(keywords) {
-            for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-                if (!h.offsetParent) continue;
-                const t = (h.innerText || '').trim().toLowerCase();
-                for (const kw of keywords) {
-                    if (t === kw || t.startsWith(kw)) return h;
-                }
-            }
-            return null;
-        }
+    # Прокручиваем в начало
+    page.evaluate(f"""() => {{
+        const panel = ({FIND_PANEL_JS})();
+        if (panel) panel.scrollTop = 0;
+        else window.scrollTo(0, 0);
+    }}""")
+    page.wait_for_timeout(400)
 
-        const specH = findHeading(specKws);
-        const descH = findHeading(descKws);
-        const anchorH = specH || descH;
-        if (!anchorH) return null;
+    page.screenshot(path=path_start)
+    print(f"Скриншот (начало) сохранён: {path_start}")
 
-        const container = getScrollContainer(anchorH);
-        if (container) {
-            // Panel mode: прокручиваем к началу раздела характеристик
-            container.scrollTop = Math.max(0, anchorH.offsetTop - 16);
-            return { mode: 'panel' };
-        }
+    # Прокручиваем в конец
+    page.evaluate(f"""() => {{
+        const panel = ({FIND_PANEL_JS})();
+        if (panel) panel.scrollTop = panel.scrollHeight;
+        else window.scrollTo(0, document.body.scrollHeight);
+    }}""")
+    page.wait_for_timeout(400)
 
-        // Fullpage mode: ищем общий контейнер-предок обоих заголовков
-        if (specH && descH) {
-            let block = specH.parentElement;
-            while (block && block !== document.body) {
-                if (block.contains(descH) && block.scrollHeight > 300) break;
-                block = block.parentElement;
-            }
-            if (block && block !== document.body) {
-                const r = block.getBoundingClientRect();
-                return {
-                    mode: 'fullpage',
-                    x: Math.max(0, Math.round(r.left)),
-                    y: Math.max(0, Math.round(r.top + window.scrollY)),
-                    width: Math.round(r.width),
-                    height: Math.round(block.scrollHeight)
-                };
-            }
-        }
-
-        // Fallback: берём контейнер якорного заголовка
-        let block = anchorH.parentElement;
-        while (block && block !== document.body) {
-            if (block.scrollHeight > 300) break;
-            block = block.parentElement;
-        }
-        if (!block || block === document.body) return null;
-        const r = block.getBoundingClientRect();
-        return {
-            mode: 'fullpage',
-            x: Math.max(0, Math.round(r.left)),
-            y: Math.max(0, Math.round(r.top + window.scrollY)),
-            width: Math.round(r.width),
-            height: Math.round(block.scrollHeight)
-        };
-    }""", [SPEC_KEYWORDS_SCREENSHOT, DESC_KEYWORDS_SCREENSHOT])
-
-    if not info:
-        page.screenshot(path=path)
-        print("screenshot_description_and_specs: разделы не найдены, fallback.")
-        return False
-
-    # === Режим 1: основная страница — full_page + кроп ===
-    if info["mode"] == "fullpage":
-        full_bytes = page.screenshot(full_page=True)
-        img = Image.open(BytesIO(full_bytes))
-        x, y, w, h = info["x"], info["y"], info["width"], info["height"]
-        x2 = min(x + w, img.width)
-        y2 = min(y + h, img.height)
-        cropped = img.crop((x, y, x2, y2))
-        cropped.save(path)
-        print(f"Скриншот характеристик+описания сохранён: {path} (full_page crop, {cropped.height}px)")
-        return True
-
-    # === Режим 2: панель — scroll + stitch до конца описания ===
-    OVERLAP = 100
-    vp = page.viewport_size or {"width": 1280, "height": 800}
-    vp_w, vp_h = vp["width"], vp["height"]
-    step = vp_h - OVERLAP
-
-    page.wait_for_timeout(300)
-    frames = []
-
-    for _ in range(20):
-        frame_bytes = page.screenshot()
-        frames.append(Image.open(BytesIO(frame_bytes)).copy())
-
-        end_visible = page.evaluate("""(descKws) => {
-            for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-                if (!h.offsetParent) continue;
-                const t = (h.innerText || '').trim().toLowerCase();
-                if (!descKws.some(kw => t === kw || t.startsWith(kw))) continue;
-                let lastEl = null, el = h.nextElementSibling;
-                while (el) {
-                    if ((el.innerText || '').trim().length > 0) lastEl = el;
-                    el = el.nextElementSibling;
-                }
-                if (!lastEl) return true;
-                return lastEl.getBoundingClientRect().bottom <= window.innerHeight + 4;
-            }
-            return true;
-        }""", DESC_KEYWORDS_SCREENSHOT)
-        if end_visible:
-            break
-
-        scrolled = page.evaluate("""([step, anchorKws]) => {
-            function getScrollContainer(el) {
-                let cur = el.parentElement;
-                while (cur && cur !== document.body) {
-                    const oy = getComputedStyle(cur).overflowY;
-                    if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight)
-                        return cur;
-                    cur = cur.parentElement;
-                }
-                return null;
-            }
-            function findHeading(kws) {
-                for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-                    if (!h.offsetParent) continue;
-                    const t = (h.innerText || '').trim().toLowerCase();
-                    for (const kw of kws) {
-                        if (t === kw || t.startsWith(kw)) return h;
-                    }
-                }
-                return null;
-            }
-            const h = findHeading(anchorKws);
-            if (!h) return false;
-            const c = getScrollContainer(h);
-            if (c) { const b = c.scrollTop; c.scrollTop += step; return c.scrollTop !== b; }
-            const b = window.scrollY; window.scrollBy(0, step); return window.scrollY !== b;
-        }""", [step, SPEC_KEYWORDS_SCREENSHOT])
-        if not scrolled:
-            break
-        page.wait_for_timeout(200)
-
-    if len(frames) == 1:
-        frames[0].save(path)
-        print(f"Скриншот характеристик+описания сохранён: {path} (1 кадр)")
-        return True
-
-    total_h = vp_h + (len(frames) - 1) * step
-    result = Image.new("RGB", (vp_w, total_h), (255, 255, 255))
-    result.paste(frames[0], (0, 0))
-    for i, frame in enumerate(frames[1:], 1):
-        result.paste(frame, (0, i * step))
-    result.save(path)
-    print(f"Скриншот характеристик+описания сохранён: {path} ({len(frames)} кадров, {total_h}px)")
+    page.screenshot(path=path_end)
+    print(f"Скриншот (конец) сохранён: {path_end}")
     return True
 
 
@@ -952,7 +815,7 @@ def process_modal_info(page):
                         f.write(text)
                     # Закрываем модалку — текст уже сохранён, скриншот делаем с основной страницы,
                     # чтобы захватить и характеристики, и описание вместе
-                    page.keyboard.press("Escape")
+                    #page.keyboard.press("Escape")
                     page.wait_for_timeout(700)
                     screenshot_description_and_specs(page, "description_section.png")
                     return
@@ -1001,6 +864,7 @@ if __name__ == "__main__":
 
         try:
             # Выполняем первую часть задач
+            time.sleep(5)
             save_product_info(page, target_url)
             make_main_screenshot(page)
 
@@ -1008,6 +872,4 @@ if __name__ == "__main__":
             process_modal_info(page)
 
         finally:
-            print("\nРабота завершена.")
-            input("Нажмите Enter, чтобы закрыть браузер...")
             browser.close()
