@@ -68,7 +68,7 @@ def open_site(p, url):
     return browser, page
 
 
-def save_product_info(page, url):
+def save_product_info(page):
     """Извлекает название товара и сохраняет в product_name.txt."""
     selector = 'h2.productTitle--lfc4o'
     try:
@@ -272,25 +272,46 @@ EXPAND_KEYWORDS = [
 def expand_description(page, selector=None):
     """Кликает кнопки 'Показать полностью' и подобные пока они есть.
 
-    selector — CSS-селектор контейнера описания (ищем кнопки только внутри него);
-    None — ищем по всей видимой странице (для панелей/модалок).
+    Использует page.mouse.click(x, y) — настоящий физический клик мышью,
+    который работает на React/Vue и любых JS-фреймворках в отличие от JS el.click().
     """
     for i in range(10):
-        clicked = page.evaluate("""([keywords, sel]) => {
-            const root = sel ? (document.querySelector(sel) || document) : document;
-            const kwsLower = keywords.map(k => k.toLowerCase());
-            for (const el of root.querySelectorAll('button, a, span, div, p')) {
-                if (!el.offsetParent) continue;
-                const t = (el.innerText || '').trim().toLowerCase();
-                if (kwsLower.some(kw => t === kw || t.startsWith(kw))) {
-                    el.click();
-                    return true;
-                }
-            }
-            return false;
-        }""", [EXPAND_KEYWORDS, selector])
+        found = False
+        for kw in EXPAND_KEYWORDS:
+            try:
+                els = page.get_by_text(kw, exact=True)
+                if els.count() == 0:
+                    continue
 
-        if not clicked:
+                el = els.first
+
+                # Пропускаем уже нажатые
+                if el.evaluate("e => !!e.closest('[data-expand-clicked]')"):
+                    continue
+
+                # Прокручиваем элемент в область видимости
+                el.scroll_into_view_if_needed(timeout=2000)
+                page.wait_for_timeout(200)
+
+                # Берём координаты центра кликабельного предка (label[for] или button/a)
+                # и помечаем его как нажатый
+                box = el.evaluate("""e => {
+                    const c = e.closest('label[for]') || e.closest('button, a') || e;
+                    c.setAttribute('data-expand-clicked', '1');
+                    const r = c.getBoundingClientRect();
+                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                }""")
+
+                # Физический клик мышью — работает на любом фреймворке
+                page.mouse.click(box['x'], box['y'])
+                found = True
+                break
+
+            except Exception as e:
+                print(f"  Ошибка клика '{kw}': {e}")
+                continue
+
+        if not found:
             print(f"  Кнопок 'Показать полностью' больше нет (итераций: {i}).")
             break
         print(f"  Кнопка раскрытия нажата (итерация {i + 1}).")
@@ -741,13 +762,13 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
 
     if scroll_y is not None:
         # === Heading-режим: описание на основной странице ===
-        page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 300))")
+        page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 200))")
         page.wait_for_timeout(400)
 
         page.screenshot(path=path_start)
         print(f"Скриншот (начало) сохранён: {path_start}")
 
-        page.evaluate("window.scrollBy(0, 400)")
+        page.evaluate("window.scrollBy(0, 450)")
         page.wait_for_timeout(400)
 
         page.screenshot(path=path_end)
@@ -910,7 +931,7 @@ if __name__ == "__main__":
 
         try:
             # Выполняем первую часть задач
-            time.sleep(5)
+            time.sleep(0)
             save_product_info(page, target_url)
             make_main_screenshot(page)
 
