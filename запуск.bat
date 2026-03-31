@@ -10,6 +10,7 @@ echo.
 
 set PYTHON=%~dp0_python\python.exe
 
+
 if not exist "%PYTHON%" (
     echo [ERROR] _python folder not found!
     echo.
@@ -62,6 +63,8 @@ if errorlevel 1 (
     echo [3/3] Dependencies already installed.
 )
 
+
+set PYTHONUTF8=1
 :: Launch the app
 echo.
 echo Starting app...

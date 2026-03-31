@@ -69,6 +69,33 @@ with st.container():
 
 
 
+            #Запуск compiler
+            script_path = os.path.join(parent_dir, "Back/compiler.py")
+            command = [sys.executable, script_path, url_input, criteria_str]
+
+            try:
+                # 3. Запуск. Используем cp1251 для Windows, чтобы не было ошибок декодирования
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding='cp1251',
+                    errors='replace'
+                )
+
+                if result.returncode == 0:
+                    st.success("✅ Готово!")
+                    st.text_area("Лог выполнения:", result.stdout)
+                else:
+                    st.error("❌ Ошибка при выполнении скрипта")
+                    st.code(result.stderr)
+
+            except Exception as e:
+                st.error(f"Не удалось запустить файл: {e}")
+
+
+
+
             #Запуск ворда
             script_path = os.path.join(current_dir, "word_redactor.py")
             command = [sys.executable, script_path, url_input, criteria_str]
