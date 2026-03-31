@@ -68,18 +68,82 @@ def open_site(p, url):
     return browser, page
 
 
-def save_product_info(page):
-    """Извлекает название товара и сохраняет в product_name.txt."""
-    selector = 'h2.productTitle--lfc4o'
-    try:
-        element = page.wait_for_selector(selector, timeout=10000)
-        product_name = element.inner_text().strip()
-    except Exception:
-        product_name = "Название не найдено"
+def llm_is_product_name(text):
+    """Спрашивает LLM: является ли текст названием товара? Возвращает True/False."""
+    prompt = f"""You are a helpful assistant that classifies web page content.
+Analyze the text below and decide if it is a PRODUCT NAME (the title of a specific item being sold).
 
+A product name is a short title that identifies a specific product for sale (brand, model, key specs).
+It is NOT a product name if it is: site navigation, category name, section heading like
+"Описание" / "Характеристики", promotional text, or a sentence longer than ~200 characters.
+
+EXAMPLES:
+- "Коллаген + Гиалуроновая кислота + Витамин С 200 гр Апельсин, Optimum System Beauty Wellness Collagen, Улучшает состояние кожи, укрепляет волосы и ногти" -> YES
+- "Смартфон Apple iPhone 17 Pro, 512 GB, цвет Deep blue (темно-синий), nanoSIM+eSIMm" -> YES
+- "Тестостерон для мужчин" -> YES
+- "Тетрадь для учёбы" -> YES
+- "Характеристики" -> NO
+- "Каталог товаров" -> NO
+- "Хиты продаж" -> NO
+- "Описание" -> NO
+
+Text: {text[:500]}
+
+Is this a product name?"""
+    try:
+        resp = requests.post(OLLAMA_URL, json={
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0}
+        }, timeout=60)
+        resp.raise_for_status()
+        answer = resp.json()["response"].strip().upper()
+        print(f"  LLM-валидация: {answer[:100]}")
+        return answer.startswith("YES")
+    except Exception as e:
+        print(f"  Ошибка LLM-валидации названия: {e}")
+        return False
+
+
+def save_product_info(page):
+    """Ищет название товара среди h1/h2 с LLM-валидацией. Сохраняет в product_name.txt."""
+
+    try:
+        page.wait_for_selector('h1, h2', timeout=10000)
+    except Exception:
+        print("  Предупреждение: h1/h2 не появились за 10с, пробуем всё равно.")
+
+    headings = page.evaluate("""() => {
+        const result = [];
+        for (const tag of ['h1', 'h2']) {
+            for (const el of document.querySelectorAll(tag)) {
+                const text = (el.innerText || el.textContent || '').trim();
+                if (text.length < 3) continue;
+                result.push({ tag, text });
+            }
+        }
+        return result;
+    }""")
+
+    h1s = [h for h in headings if h['tag'] == 'h1']
+    h2s = [h for h in headings if h['tag'] == 'h2']
+    print(f"  Найдено заголовков: h1={len(h1s)}, h2={len(h2s)}")
+
+    for h in headings:
+        text = h['text']
+        print(f"\n--- Проверяем {h['tag']}: {text[:80]}{'...' if len(text) > 80 else ''} ---")
+        if llm_is_product_name(text):
+            print("  LLM: это название товара ✓")
+            with open("product_name.txt", "w", encoding="utf-8") as f:
+                f.write(text)
+            print(f"  Название сохранено: {text[:80]}")
+            return
+        print("  LLM: не название, пробуем дальше.")
+
+    print("  Название товара не найдено ни в одном h1/h2.")
     with open("product_name.txt", "w", encoding="utf-8") as f:
-        f.write(f"{product_name}")
-    print(f"Инфо сохранено: {product_name}")
+        f.write("Название не найдено")
 
 
 def make_main_screenshot(page):
@@ -932,7 +996,7 @@ if __name__ == "__main__":
         try:
             # Выполняем первую часть задач
             time.sleep(0)
-            save_product_info(page, target_url)
+            save_product_info(page)
             make_main_screenshot(page)
 
             # Выполняем вторую часть (модальное окно)
