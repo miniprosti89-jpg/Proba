@@ -64,7 +64,7 @@ if errorlevel 1 (
 )
 
 
-set PYTHONUTF8=1
+
 :: Launch the app
 echo.
 echo Starting app...

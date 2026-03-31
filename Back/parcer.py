@@ -9,6 +9,16 @@ from io import BytesIO
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from PIL import Image, ImageDraw, ImageFont
+from pathlib import Path
+
+back_dir = Path(__file__).parent
+
+# Консоль Windows (cp1251) не умеет выводить символы вне своей кодировки.
+# Переключаем stdout/stderr на UTF-8 с заменой неизвестных символов на '?'.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 #from llama_cpp import Llama
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -134,14 +144,14 @@ def save_product_info(page):
         print(f"\n--- Проверяем {h['tag']}: {text[:80]}{'...' if len(text) > 80 else ''} ---")
         if llm_is_product_name(text):
             print("  LLM: это название товара")
-            with open("product_name.txt", "w", encoding="utf-8") as f:
+            with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
                 f.write(text)
             print(f"  Название сохранено: {text[:80]}")
             return
         print("  LLM: не название, пробуем дальше.")
 
     print("  Название товара не найдено ни в одном h1/h2.")
-    with open("product_name.txt", "w", encoding="utf-8") as f:
+    with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
         f.write("Название не найдено")
 
 
@@ -162,7 +172,7 @@ def make_main_screenshot(page):
     # Рисуем текст в левом нижнем углу
     draw.text((20, image.height - 60), timestamp, fill="red", font=font)
 
-    path = "final_screenshot.png"
+    path = back_dir / "final_screenshot.png"
     image.save(path)
     print(f"Общий скриншот сохранен: {path}")
 
@@ -657,15 +667,15 @@ def screenshot_container(page, selector, path):
     if not text:
         return False
 
-    with open("description.txt", "w", encoding="utf-8") as f:
+    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
         f.write(text)
 
     return render_text_as_image(text, path)
 
 
-def save_description(text, path="description_section.png"):
+def save_description(text, path= "description_section.png"):
     """Сохраняет текст в description.txt и рендерит PNG."""
-    with open("description.txt", "w", encoding="utf-8") as f:
+    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
         f.write(text)
     render_text_as_image(text, path)
     print(f"Описание сохранено ({len(text)} символов)")
@@ -901,9 +911,9 @@ def process_modal_info(page):
                         expanded_text = page.locator(result["selector"]).first.inner_text(timeout=3000)
                     except Exception:
                         expanded_text = text
-                    with open("description.txt", "w", encoding="utf-8") as f:
+                    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
                         f.write(expanded_text or text)
-                    screenshot_description_and_specs(page, "description_section.png", scroll_y=result.get("scrollY"))
+                    screenshot_description_and_specs(page, str(back_dir / "description_section.png"), scroll_y=result.get("scrollY"))
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
@@ -945,9 +955,9 @@ def process_modal_info(page):
                     # Перечитываем текст после раскрытия
                     after_expanded = get_text_after_click(page)
                     expanded_text = after_expanded.get("text") if after_expanded else None
-                    with open("description.txt", "w", encoding="utf-8") as f:
+                    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
                         f.write(expanded_text or text)
-                    screenshot_description_and_specs(page, "description_section.png")
+                    screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
@@ -975,9 +985,9 @@ def process_modal_info(page):
 
         text = block["preview"]
         if llm_is_description(text):
-            with open("description.txt", "w", encoding="utf-8") as f:
+            with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
                 f.write(text)
-            screenshot_description_and_specs(page, "description_section.png")
+            screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
         else:
             print("Описание не найдено даже в фоллбэке.")
             page.screenshot(path="description_section.png", full_page=True)

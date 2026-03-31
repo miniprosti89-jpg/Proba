@@ -81,13 +81,35 @@ def fill_template(template_path: str, report: dict,
     screens_dict = report.get("screens", {})  # Получаем словарь из JSON
 
     if isinstance(screens_dict, dict):
+        _back_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Back")
         for key in sorted(screens_dict.keys()):
             img_path = screens_dict[key]
-                # width=Mm(160) — ширина почти на весь лист
-            # СДЕЛАЙ ПО ЦЕНТРУ!!!
-            context["screenshots"].append(InlineImage(doc, img_path, width=Mm(160)))
+            # Если путь относительный — ищем файл в back_dir
+            if not os.path.isabs(img_path):
+                img_path = os.path.join(_back_dir, img_path)
+            if not os.path.exists(img_path):
+                print(f"[ПРЕДУПРЕЖДЕНИЕ] Скриншот не найден: {img_path}")
+                continue
+            context["screenshots"].append(InlineImage(doc, img_path, width=Mm(259), height=Mm(144)))
 
     doc.render(context)
+
+    # После рендера вставляем разрыв страницы после каждого параграфа с изображением,
+    # чтобы каждый скриншот занимал свою страницу целиком
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    for para in list(doc.docx.paragraphs):
+        if not para._element.findall('.//' + qn('w:drawing')):
+            continue
+        pb_para = OxmlElement('w:p')
+        pb_run  = OxmlElement('w:r')
+        pb_br   = OxmlElement('w:br')
+        pb_br.set(qn('w:type'), 'page')
+        pb_run.append(pb_br)
+        pb_para.append(pb_run)
+        para._element.addnext(pb_para)
+
     doc.save(output_path)
 
 
@@ -127,7 +149,8 @@ def main():
     # НАСТРОЙКА ПУТЕЙ
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
-    report_path = os.path.join(parent_dir, "report.json")
+    back_dir = os.path.join(parent_dir, "Back")
+    report_path = os.path.join(back_dir, "report.json")
     template_path = os.path.join(current_dir, "template.docx")
 
     if not os.path.exists(template_path):
