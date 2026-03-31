@@ -262,6 +262,39 @@ DESCRIPTION_KEYWORDS = [
     "Характеристики",
 ]
 
+EXPAND_KEYWORDS = [
+    "Показать полностью",
+    "Показать целиком",
+    "Все характеристики",
+]
+
+
+def expand_description(page, selector=None):
+    """Кликает кнопки 'Показать полностью' и подобные пока они есть.
+
+    selector — CSS-селектор контейнера описания (ищем кнопки только внутри него);
+    None — ищем по всей видимой странице (для панелей/модалок).
+    """
+    for i in range(10):
+        clicked = page.evaluate("""([keywords, sel]) => {
+            const root = sel ? (document.querySelector(sel) || document) : document;
+            const kwsLower = keywords.map(k => k.toLowerCase());
+            for (const el of root.querySelectorAll('button, a, span, div, p')) {
+                if (!el.offsetParent) continue;
+                const t = (el.innerText || '').trim().toLowerCase();
+                if (kwsLower.some(kw => t === kw || t.startsWith(kw))) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }""", [EXPAND_KEYWORDS, selector])
+
+        if not clicked:
+            print(f"  Кнопок 'Показать полностью' больше нет (итераций: {i}).")
+            break
+        print(f"  Кнопка раскрытия нажата (итерация {i + 1}).")
+        page.wait_for_timeout(600)
 
 
 def strip_heading(text, keyword):
@@ -386,19 +419,12 @@ def find_element_by_keyword(page, keyword):
 
                 // Ищем внутри контейнера первый блок с прозой (не весь контейнер)
                 const proseEl = findProseChild(container);
-                if (proseEl) {
-                    return {
-                        type: 'heading',
-                        selector: buildSelector(proseEl),
-                        text: (proseEl.innerText || '').trim()
-                    };
-                }
-
-                // Фоллбэк: весь контейнер
+                const target = proseEl || container;
                 return {
                     type: 'heading',
-                    selector: buildSelector(container),
-                    text: (container.innerText || '').trim()
+                    selector: buildSelector(target),
+                    scrollY: Math.round(target.getBoundingClientRect().top + window.scrollY),
+                    text: (target.innerText || '').trim()
                 };
             }
         }
@@ -698,14 +724,14 @@ def screenshot_full_description(page, path="description_section.png"):
     return True
 
 
-def screenshot_description_and_specs(page, path="description_section.png", selector=None):
+def screenshot_description_and_specs(page, path="description_section.png", selector=None, scroll_y=None):
     """Два скриншота: начало и конец раздела.
 
-    selector задан (heading-режим):
-        Скролим к найденному элементу, поднимаемся на 100px (чтобы захватить характеристики
-        выше), делаем скрин, опускаемся на 400px, делаем скрин.
+    scroll_y задан (heading-режим):
+        Скролим к абсолютной Y-позиции элемента, поднимаемся на 100px (чтобы захватить
+        характеристики выше), делаем скрин, опускаемся на 400px, делаем скрин.
 
-    selector=None (panel-режим):
+    scroll_y=None (panel-режим):
         Находим самый большой видимый скролл-контейнер (панель), скролим его в начало,
         делаем скрин, скролим в конец, делаем скрин.
     """
@@ -713,10 +739,9 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
     path_start = f"{base}_start.{ext}"
     path_end   = f"{base}_end.{ext}"
 
-    if selector:
+    if scroll_y is not None:
         # === Heading-режим: описание на основной странице ===
-        page.locator(selector).first.scroll_into_view_if_needed(timeout=3000)
-        page.evaluate("window.scrollBy(0, -100)")
+        page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 300))")
         page.wait_for_timeout(400)
 
         page.screenshot(path=path_start)
@@ -786,9 +811,15 @@ def process_modal_info(page):
                 print(f"  Текст: {text_for_llm[:80]}...")
                 if llm_is_description(text_for_llm):
                     print("  LLM: это описание ✓")
+                    expand_description(page, selector=result["selector"])
+                    # Перечитываем текст после раскрытия
+                    try:
+                        expanded_text = page.locator(result["selector"]).first.inner_text(timeout=3000)
+                    except Exception:
+                        expanded_text = text
                     with open("description.txt", "w", encoding="utf-8") as f:
-                        f.write(text)
-                    screenshot_description_and_specs(page, "description_section.png", selector=result["selector"])
+                        f.write(expanded_text or text)
+                    screenshot_description_and_specs(page, "description_section.png", scroll_y=result.get("scrollY"))
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
@@ -826,8 +857,12 @@ def process_modal_info(page):
                 print(f"  Текст после клика: {text_for_llm[:80]}...")
                 if llm_is_description(text_for_llm):
                     print("  LLM: это описание ✓")
+                    expand_description(page)
+                    # Перечитываем текст после раскрытия
+                    after_expanded = get_text_after_click(page)
+                    expanded_text = after_expanded.get("text") if after_expanded else None
                     with open("description.txt", "w", encoding="utf-8") as f:
-                        f.write(text)
+                        f.write(expanded_text or text)
                     screenshot_description_and_specs(page, "description_section.png")
                     return
                 else:
