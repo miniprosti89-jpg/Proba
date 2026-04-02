@@ -58,7 +58,7 @@ with st.container():
                 )
 
                 if result.returncode == 0:
-                    st.success("✅ Готово!")
+                    st.success("✅ Парсинг страницы - успех!")
                     st.text_area("Лог выполнения:", result.stdout)
                 else:
                     st.error("❌ Ошибка при выполнении скрипта")
@@ -84,7 +84,7 @@ with st.container():
                 )
 
                 if result.returncode == 0:
-                    st.success("✅ Готово!")
+                    st.success("✅ Создание json - успех!")
                     st.text_area("Лог выполнения:", result.stdout)
                 else:
                     st.error("❌ Ошибка при выполнении скрипта")
@@ -111,7 +111,7 @@ with st.container():
                 )
 
                 if result.returncode == 0:
-                    st.success("✅ Готово!")
+                    st.success("✅ Создание word-отчёта - успех!")
                     st.text_area("Лог выполнения:", result.stdout)
                 else:
                     st.error("❌ Ошибка при выполнении скрипта")

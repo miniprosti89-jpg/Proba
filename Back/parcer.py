@@ -16,9 +16,9 @@ back_dir = Path(__file__).parent
 # Консоль Windows (cp1251) не умеет выводить символы вне своей кодировки.
 # Переключаем stdout/stderr на UTF-8 с заменой неизвестных символов на '?'.
 if hasattr(sys.stdout, 'reconfigure'):
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stdout.reconfigure(encoding='cp1251', errors='replace')
 if hasattr(sys.stderr, 'reconfigure'):
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='cp1251', errors='replace')
 
 #from llama_cpp import Llama
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -80,15 +80,21 @@ def open_site(p, url):
 
 def llm_is_product_name(text):
     """Спрашивает LLM: является ли текст названием товара? Возвращает True/False."""
-    prompt = f"""You are a helpful assistant that classifies web page content.
-Analyze the text below and decide if it is a PRODUCT NAME (the title of a specific item being sold).
-A product name is a short title, or a description of a product.
-It is NOT a product name if it is: site navigation, category name, section heading like
-"Описание" / "Характеристики", promotional text, or a sentence longer than ~200 characters.
+    prompt = f"""You are a classifier. Answer with YES or NO, then elaborate why.
+
+Is the text below a PRODUCT NAME (a marketplace listing title)?
+
+Rules:
+- YES: any product title, even long ones with brand, dosage, weight, benefits, quantity, latin names
+- YES: titles with commas listing specs like "Цинк, 25 мг, 120 капсул, Zinc Picolinate"
+- NO: single generic words like "Характеристики", "Описание", "Каталог"
+- NO: navigation/promo phrases like "Хиты продаж", "Добавить в корзину"
+- NO: full sentences with verbs describing how to use a product
 
 EXAMPLES:
-- "Коллаген + Гиалуроновая кислота + Витамин С 200 гр Апельсин, Optimum System Beauty Wellness Collagen, Улучшает состояние кожи, укрепляет волосы и ногти" -> YES
-- "Смартфон Apple iPhone 17 Pro, 512 GB, цвет Deep blue (темно-синий), nanoSIM+eSIMm" -> YES
+- "Цинк витамины Пиколинат, 25 мг VitaMeal для иммунитета, для кожи, 120 капсул, Zinc Picolinate" -> YES
+- "Коллаген + Гиалуроновая кислота + Витамин С 200 гр, Optimum System, Улучшает состояние кожи" -> YES
+- "Смартфон Apple iPhone 17 Pro, 512 GB, Deep blue, nanoSIM+eSIM" -> YES
 - "Тестобустер для мужчин, витамины для энергии и либидо" -> YES
 - "Тетрадь для учёбы" -> YES
 - "Характеристики" -> NO
@@ -98,7 +104,7 @@ EXAMPLES:
 
 Text: {text[:500]}
 
-Is this a product name?"""
+YES or NO?"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -108,7 +114,7 @@ Is this a product name?"""
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip().upper()
-        print(f"  LLM-валидация: {answer[:100]}")
+        print(f"  LLM-валидация: {answer[:500]}")
         return answer.startswith("YES")
     except Exception as e:
         print(f"  Ошибка LLM-валидации названия: {e}")
@@ -400,20 +406,30 @@ def strip_heading(text, keyword):
 
 def llm_is_description(text):
     """Спрашивает LLM: является ли текст описанием товара? Возвращает True/False."""
-    prompt = f"""You are a helpful assistant that classifies web page content.
-    Analyze the text below and decide if it is a product DESCRIPTION (prose story about the item or its components) or just technical data.
+    prompt = f"""You are a classifier for marketplace product pages. Answer with YES or NO, then elaborate why.
 
-    A product DESCRIPTION is a prose story either about the product, or about its components, in full sentences.
-    A text is NOT a description if it is just a list of specs, technical data, or site navigation.
-    EXAMPLES:
-    - "Коллаген – незаменимый для организма компонент, который требует постоянного восполнения с помощью пищи. Согласно научным данным, количество коллагена в организме составляет около 6% от общей массы тела. Вещество присутствует почти во всех тканях и оказывает комплексное воздействие на работу организма, всех систем и здоровья в целом." -> YES
-    - "Беспроводная док-станция Wireless Charging Dock for Kindle Paperwhite Signature Edition. При помещении ридера на док-станцию, он заряжается автоматически. Зарядка до 100% осуществляется за 2 часа. Ридер можно заряжать, не вынимая из чехла" -> YES
-    - "Вес: 500г. Срок годности: 24 месяца. Сделано в РФ." -> NO
-    - "Доставка завтра. В корзину. Описание. Характеристики." -> NO
+Does the text below belong to a product page description section? It does NOT need to describe a specific product — educational content about an ingredient or substance found in the product also counts as YES.
 
-    Text: {text[:1000]}
+Say YES if the text:
+- explains what an ingredient or substance is and what it does in the body
+- lists benefits, effects, or properties of a product or its components
+- describes usage, dosage, or contraindications
+- is a marketing or informational story about the product or its formula
 
-    Is this a product description?"""
+Say NO only if the text is:
+- purely dry technical specs (weight, dimensions, barcode, country only)
+- site navigation, cart/delivery buttons, or UI labels
+
+EXAMPLES:
+- "Что такое Цинк? Организм содержит до 2 г цинка. Концентрируется в печени и простате. Поддерживает иммунную систему. Поддерживает синтез половых гормонов." -> YES (educational content about the active ingredient counts)
+- "Коллаген – незаменимый компонент. Присутствует почти во всех тканях. Оказывает комплексное воздействие на организм." -> YES
+- "Беспроводная зарядка для Kindle. Заряжается автоматически за 2 часа." -> YES
+- "Артикул: 158457088. Страна: Россия. Вес нетто: 100г." -> NO
+- "Доставка завтра. В корзину. Описание. Характеристики." -> NO
+
+Text: {text[:1000]}
+
+YES or NO?"""
     # Answer with only one word: YES or NO.
     try:
         resp = requests.post(OLLAMA_URL, json={
@@ -424,7 +440,7 @@ def llm_is_description(text):
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip().upper()
-        print(f"  LLM-валидация: {answer[:100]}")
+        print(f"  LLM-валидация: {answer[:500]}")
         return answer.startswith("YES")
     except Exception as e:
         print(f"  Ошибка LLM-валидации: {e}")
@@ -1004,7 +1020,7 @@ if __name__ == "__main__":
         browser, page = open_site(p, target_url)
 
         # Выполняем первую часть задач
-        time.sleep(0)
+        time.sleep(3)
         save_product_info(page)
         make_main_screenshot(page)
 
