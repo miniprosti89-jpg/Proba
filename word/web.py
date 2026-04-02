@@ -120,7 +120,7 @@ with st.container():
             except Exception as e:
                 st.error(f"Не удалось запустить файл: {e}")
     st.divider()
-    if st.button("🔴 Закрыть приложение"):
+    if st.button("🔴 Закрыть приложение "):
         import streamlit.components.v1 as components
 
         components.html("""
