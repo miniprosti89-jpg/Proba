@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from datetime import datetime
 
 back_dir = Path(__file__).parent
 
 def build_json():
+    timestamp = datetime.now().strftime("%d.%m.%Y (%H:%M)")
     # 1. Читаем название товара и URL из одного файла
     try:
         with open(back_dir / 'product_name.txt', 'r', encoding='utf-8') as f:
@@ -34,6 +36,7 @@ def build_json():
 
     # 4. Собираем структуру
     result_data = {
+        "time": timestamp,
         "url": "",
         "tovar": product_name,
         "desc": description,

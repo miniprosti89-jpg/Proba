@@ -71,6 +71,7 @@ def fill_template(template_path: str, report: dict,
 
     decisions = build_decision_text(criteria_nums, url)
     context = {
+        "time": report.get("time", ""),
         "url":   report.get("url", ""),
         "tovar": report.get("tovar", ""),
         "desc": report.get("desc", ""),
