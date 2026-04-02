@@ -171,14 +171,28 @@ def make_main_screenshot(page):
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        # Попытка загрузить шрифт (может потребоваться путь к .ttf в Linux)
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
-    except:
-        font = ImageFont.load_default()
-
-    # Рисуем текст в левом нижнем углу
-    draw.text((20, image.height - 60), timestamp, fill="red", font=font)
+    # Создаём временное изображение для рендера текста
+    font = ImageFont.load_default()
+    tmp_bbox = draw.textbbox((0, 0), timestamp, font=font)
+    tmp_w = tmp_bbox[2] - tmp_bbox[0]
+    tmp_h = tmp_bbox[3] - tmp_bbox[1]
+    
+    # Рендерим текст на отдельном изображении
+    txt_image = Image.new('RGBA', (tmp_w + 10, tmp_h + 10), (0, 0, 0, 0))
+    txt_draw = ImageDraw.Draw(txt_image)
+    txt_draw.text((5, 5), timestamp, fill="red", font=font)
+    
+    # Масштабируем текст (scale_factor = 3, 4, 5 — чем больше, тем крупнее)
+    scale_factor = 4
+    txt_image = txt_image.resize(
+        (txt_image.width * scale_factor, txt_image.height * scale_factor),
+        Image.Resampling.LANCZOS
+    )
+    
+    # Накладываем масштабированный текст на скриншот
+    txt_x = 60
+    txt_y = image.height - txt_image.height - 20
+    image.paste(txt_image, (txt_x, txt_y), txt_image)
 
     path = back_dir / "final_screenshot.png"
     image.save(path)
