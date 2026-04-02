@@ -21,16 +21,23 @@ def build_json():
     except FileNotFoundError:
         description = ""
 
-    # 3. Собираем структуру
+    # 3. Собираем список скриншотов описания (description_section_1.png, _2.png, ...)
+    screens = {"s1": "final_screenshot.png"}
+    i = 0
+    while True:
+        name = f"description_section_{i}.png"
+        if (back_dir / name).exists():
+            screens[f"s{i + 1}"] = name
+            i += 1
+        else:
+            break
+
+    # 4. Собираем структуру
     result_data = {
         "url": "",
         "tovar": product_name,
         "desc": description,
-        "screens": {
-            "s1": "final_screenshot.png",
-            "s2": "description_section_start.png",
-            "s3": "description_section_end.png"
-        }
+        "screens": screens
     }
 
     # 4. Сохраняем результат

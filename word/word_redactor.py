@@ -12,6 +12,7 @@
 """
 #from web import choices
 import json
+import re
 import sys
 import os
 from docxtpl import DocxTemplate, InlineImage
@@ -117,6 +118,21 @@ def fill_template(template_path: str, report: dict,
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def cleanup_screenshots(back_dir: str):
+    """Удаляет все файлы description_section_*.png из папки Back."""
+    import glob
+    pattern = os.path.join(back_dir, "description_section_*.png")
+    files = glob.glob(pattern)
+    for f in files:
+        try:
+            os.remove(f)
+            print(f"Удалён: {os.path.basename(f)}")
+        except Exception as e:
+            print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось удалить {f}: {e}")
+    if files:
+        print(f"Очистка: удалено {len(files)} файл(ов) description_section.")
+
+
 def load_report(path: str = "report.json") -> dict:
     if not os.path.exists(path):
         print(f"[ОШИБКА] Файл '{path}' не найден.")
@@ -167,13 +183,19 @@ def main():
     print(f"Введенный URL: {url_from_web}")
     print(f"Выбранные критерии: {criteria_nums}")
 
-    output_path = f"Результат_{criteria_nums}.docx"
+    tovar = report.get("tovar", "").strip()
+    # Обрезаем до 60 символов и убираем символы, запрещённые в именах файлов
+    tovar_safe = re.sub(r'[\\/*?:"<>|]', '', tovar)[:30].strip()
+    output_name = f"Результат_{criteria_nums}_{tovar_safe}.docx" if tovar_safe else f"Результат_{criteria_nums}.docx"
+    output_path = os.path.join(parent_dir, output_name)
 
     # Запускаем генерацию
     fill_template(template_path, report, criteria_nums, output_path)
 
     print(f"\nГотово! Сохранено в: {output_path}")
     print("=" * 60)
+
+    cleanup_screenshots(back_dir)
 
 
 if __name__ == "__main__":

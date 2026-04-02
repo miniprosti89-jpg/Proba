@@ -84,29 +84,25 @@ def llm_is_product_name(text):
     """Спрашивает LLM: является ли текст названием товара? Возвращает True/False."""
     prompt = f"""You are a classifier. Answer with YES or NO, then elaborate why.
 
-Is the text below a PRODUCT NAME (a marketplace listing title)?
+Is the text below a PRODUCT NAME from an online marketplace?
 
-Rules:
-- YES: any product title, even long ones with brand, dosage, weight, benefits, quantity, latin names
-- YES: titles with commas listing specs like "Цинк, 25 мг, 120 капсул, Zinc Picolinate"
-- NO: single generic words like "Характеристики", "Описание", "Каталог"
-- NO: navigation/promo phrases like "Хиты продаж", "Добавить в корзину"
-- NO: full sentences with verbs describing how to use a product
+A product name is a noun phrase that identifies a specific product: it may include type, brand, specs, dosage, weight, quantity, flavour, or latin names. It does NOT contain full explanatory sentences.
+
+Say NO only if: the text is a generic UI label ("Описание", "Каталог", "Характеристики"), a promo phrase ("Хиты продаж"), or navigation text ("Добавить в корзину", "Доставка").
 
 EXAMPLES:
-- "Цинк витамины Пиколинат, 25 мг VitaMeal для иммунитета, для кожи, 120 капсул, Zinc Picolinate" -> YES
-- "Коллаген + Гиалуроновая кислота + Витамин С 200 гр, Optimum System, Улучшает состояние кожи" -> YES
-- "Смартфон Apple iPhone 17 Pro, 512 GB, Deep blue, nanoSIM+eSIM" -> YES
-- "Тестобустер для мужчин, витамины для энергии и либидо" -> YES
+- "Хлорофилл жидкий со вкусом мяты, 500 мл" -> YES
+- "Цинк Пиколинат, 25 мг, 120 капсул, VitaMeal, Zinc Picolinate" -> YES
+- "Смартфон Apple iPhone 17 Pro, 512 GB, Deep blue" -> YES
 - "Тетрадь для учёбы" -> YES
-- "Характеристики" -> NO
+- "Описание" -> NO
 - "Каталог товаров" -> NO
 - "Хиты продаж" -> NO
-- "Описание" -> NO
+- "Добавить в корзину" -> NO
 
-Text: {text[:500]}
+Text: {text}
 
-YES or NO?"""
+Answer only YES or NO"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -197,7 +193,7 @@ def make_main_screenshot(page, path=None):
     image.paste(txt_image, (txt_x, txt_y), txt_image)
 
     if path is None:
-        path = back_dir / "final_screenshot.png"
+        path = back_dir / "description_section_0.png"
     image.save(path)
     print(f"Скриншот сохранён: {path}")
 
@@ -425,30 +421,40 @@ def strip_heading(text, keyword):
 
 def llm_is_description(text):
     """Спрашивает LLM: является ли текст описанием товара? Возвращает True/False."""
+    # --- Быстрые эвристики на Python (без LLM) ---
+    stripped = text.strip()
+    sentence_count = len(re.findall(r'[.!?][\s\n]', stripped)) + (1 if stripped and stripped[-1] in '.!?' else 0)
+
+    # Явно слишком короткий без предложений → не описание
+    if len(stripped) < 80 and sentence_count == 0:
+        print(f"  Эвристика: слишком короткий ({len(stripped)} симв.) → не описание")
+        return False
+
+    # Длинный текст с предложениями → скорее всего описание, но всё равно проверяем LLM
+    # (вдруг это просто большой блок характеристик)
+
     prompt = f"""You are a classifier for marketplace product pages. Answer with YES or NO, then elaborate why.
 
-Does the text below belong to a product page description section? It does NOT need to describe a specific product — educational content about an ingredient or substance found in the product also counts as YES.
+Does the text below belong to a product DESCRIPTION section?
 
-Say YES if the text:
-- explains what an ingredient or substance is and what it does in the body
-- lists benefits, effects, or properties of a product or its components
-- describes usage, dosage, or contraindications
-- is a marketing or informational story about the product or its formula
+A description contains full sentences that tell a story: what the product/ingredient is, how it works, benefits, effects, usage, or dosage. Educational content about an ingredient (e.g. "Что такое цинк?") also counts as YES.
 
 Say NO only if the text is:
-- purely dry technical specs (weight, dimensions, barcode, country only)
-- site navigation, cart/delivery buttons, or UI labels
+- a short product name or heading (no full sentences)
+- purely dry specs (weight, barcode, country — no explanatory sentences)
+- navigation or UI labels
 
 EXAMPLES:
-- "Что такое Цинк? Организм содержит до 2 г цинка. Концентрируется в печени и простате. Поддерживает иммунную систему. Поддерживает синтез половых гормонов." -> YES (educational content about the active ingredient counts)
+- "Что такое Цинк? Организм содержит до 2 г цинка. Концентрируется в печени и простате. Поддерживает иммунную систему." -> YES
 - "Коллаген – незаменимый компонент. Присутствует почти во всех тканях. Оказывает комплексное воздействие на организм." -> YES
 - "Беспроводная зарядка для Kindle. Заряжается автоматически за 2 часа." -> YES
-- "Артикул: 158457088. Страна: Россия. Вес нетто: 100г." -> NO
-- "Доставка завтра. В корзину. Описание. Характеристики." -> NO
+- "Хлорофилл жидкий со вкусом мяты, 500 мл" -> NO  (product name, no sentences)
+- "Артикул: 158457088. Страна: Россия. Вес нетто: 100г." -> NO  (dry specs)
+- "Доставка завтра. В корзину." -> NO  (UI)
 
-Text: {text[:1000]}
+Text: {stripped[:10000]}
 
-YES or NO?"""
+Answer only YES or NO"""
     # Answer with only one word: YES or NO.
     try:
         resp = requests.post(OLLAMA_URL, json={
