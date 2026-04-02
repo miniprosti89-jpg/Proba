@@ -59,7 +59,9 @@ def open_site(p, url):
         f"--remote-debugging-port={DEBUG_PORT}",
         f"--user-data-dir={user_data_dir}",
         "--start-maximized",
-        "--force-device-scale-factor=1"
+        "--force-device-scale-factor=1",
+        "--device-scale-factor=1",
+        "--high-dpi-support=1"
     ])
 
     print("Ожидание запуска браузера...")
