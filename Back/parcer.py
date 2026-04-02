@@ -163,8 +163,10 @@ def save_product_info(page):
         f.write("Название не найдено")
 
 
-def make_main_screenshot(page):
-    """Делает общий скриншот и накладывает дату/время."""
+def make_main_screenshot(page, path=None):
+    """Делает скриншот и накладывает дату/время.
+    path=None → сохраняет в back_dir/final_screenshot.png (поведение по умолчанию).
+    """
     screenshot_bytes = page.screenshot(full_page=False)
     image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
@@ -194,9 +196,10 @@ def make_main_screenshot(page):
     txt_y = image.height - txt_image.height - 20
     image.paste(txt_image, (txt_x, txt_y), txt_image)
 
-    path = back_dir / "final_screenshot.png"
+    if path is None:
+        path = back_dir / "final_screenshot.png"
     image.save(path)
-    print(f"Общий скриншот сохранен: {path}")
+    print(f"Скриншот сохранён: {path}")
 
 
 def extract_text_blocks(page):
@@ -546,10 +549,12 @@ def find_element_by_keyword(page, keyword):
                 // Ищем внутри контейнера первый блок с прозой (не весь контейнер)
                 const proseEl = findProseChild(container);
                 const target = proseEl || container;
+                const rect = target.getBoundingClientRect();
                 return {
                     type: 'heading',
                     selector: buildSelector(target),
-                    scrollY: Math.round(target.getBoundingClientRect().top + window.scrollY),
+                    scrollY:    Math.round(rect.top    + window.scrollY),
+                    endScrollY: Math.round(rect.bottom + window.scrollY),
                     text: (target.innerText || '').trim()
                 };
             }
@@ -636,251 +641,48 @@ def get_text_after_click(page):
     return None
 
 
-def render_text_as_image(text, path, img_width=900):
-    """Рендерит текст описания в чистый PNG через PIL."""
-    # Пробуем загрузить нормальный шрифт
-    font_size = 18
-    font_small = 14
-    try:
-        font_title = ImageFont.truetype("arial.ttf", font_size + 4)
-        font_body  = ImageFont.truetype("arial.ttf", font_size)
-    except Exception:
-        try:
-            # Linux-путь
-            font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size + 4)
-            font_body  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", font_size)
-        except Exception:
-            font_title = ImageFont.load_default()
-            font_body  = font_title
+def screenshot_description_and_specs(page, path="description_section.png", selector=None, scroll_y=None, end_y=None):
+    """Серия скриншотов с датой/временем, покрывающая раздел описания и характеристик.
 
-    padding   = 30
-    line_h    = font_size + 6
-    text_width = img_width - padding * 2
-    # Примерно 1 символ ~ font_size * 0.55 px
-    chars_per_line = max(40, int(text_width / (font_size * 0.55)))
+    Heading-режим (scroll_y задан):
+        Мотаем к началу блока (scroll_y - 200), затем каждые 300px делаем скриншот
+        через make_main_screenshot пока не достигнем end_y (нижний край блока).
 
-    lines_out = []
-    for para in text.split('\n'):
-        para = para.strip()
-        if not para:
-            lines_out.append(('', None))
-            continue
-        wrapped = textwrap.wrap(para, width=chars_per_line)
-        for i, line in enumerate(wrapped):
-            font = font_title if (i == 0 and len(para) < 80) else font_body
-            lines_out.append((line, font))
-        lines_out.append(('', None))
-
-    height = padding * 2 + len(lines_out) * line_h
-    img = Image.new('RGB', (img_width, max(height, 200)), color=(255, 255, 255))
-    draw = ImageDraw.Draw(img)
-
-    y = padding
-    for line, font in lines_out:
-        if line:
-            draw.text((padding, y), line, fill=(20, 20, 20), font=font or font_body)
-        y += line_h
-
-    img.save(path)
-    print(f"Изображение описания сохранено в {path} ({img_width}x{height}px)")
-    return True
-
-
-def screenshot_container(page, selector, path):
-    """Извлекает текст из элемента и рендерит его как PNG."""
-    el = page.locator(selector).first
-    if el.count() == 0 or not el.is_visible():
-        return False
-
-    el.scroll_into_view_if_needed()
-    page.wait_for_timeout(300)
-
-    text = el.inner_text().strip()
-    if not text:
-        return False
-
-    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-        f.write(text)
-
-    return render_text_as_image(text, path)
-
-
-def save_description(text, path= "description_section.png"):
-    """Сохраняет текст в description.txt и рендерит PNG."""
-    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-        f.write(text)
-    render_text_as_image(text, path)
-    print(f"Описание сохранено ({len(text)} символов)")
-
-
-def screenshot_full_description(page, path="description_section.png"):
-    """Снимает полное описание товара.
-    - Основная страница (Ozon и др.): full_page=True + кроп по координатам контейнера.
-      Не зависит от sticky-хедеров и скроллинга вообще.
-    - Панель/модалка (WB и др.): scroll+stitch viewport-скриншотов."""
-
-    # Определяем: панель это или основная страница, и собираем координаты
-    info = page.evaluate("""() => {
-        function getScrollContainer(el) {
-            let cur = el.parentElement;
-            while (cur && cur !== document.body) {
-                const oy = getComputedStyle(cur).overflowY;
-                if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight)
-                    return cur;
-                cur = cur.parentElement;
-            }
-            return null;
-        }
-
-        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-            if (!(h.innerText || '').trim().match(/^Описание$/i)) continue;
-            if (!h.offsetParent) continue;
-
-            const container = getScrollContainer(h);
-            if (container) {
-                // Панель — scroll+stitch
-                container.scrollTop = Math.max(0, h.offsetTop - 16);
-                return { mode: 'panel' };
-            } else {
-                // Основная страница — берём координаты контейнера в документе
-                // Ищем родительский блок с полным текстом описания
-                let block = h.parentElement;
-                while (block && block !== document.body) {
-                    if (block.scrollHeight > 300) break;
-                    block = block.parentElement;
-                }
-                const r = block.getBoundingClientRect();
-                return {
-                    mode: 'fullpage',
-                    x: Math.max(0, Math.round(r.left)),
-                    // Абсолютная Y в документе (не в viewport)
-                    y: Math.max(0, Math.round(r.top + window.scrollY)),
-                    width: Math.round(r.width),
-                    height: Math.round(block.scrollHeight)
-                };
-            }
-        }
-        return null;
-    }""")
-
-    if not info:
-        page.screenshot(path=path)
-        print("screenshot_full_description: заголовок 'Описание' не найден, fallback.")
-        return False
-
-    # === Режим 1: основная страница — full_page + кроп ===
-    if info["mode"] == "fullpage":
-        full_bytes = page.screenshot(full_page=True)
-        img = Image.open(BytesIO(full_bytes))
-        x, y, w, h = info["x"], info["y"], info["width"], info["height"]
-        # Защита от выхода за пределы изображения
-        x2 = min(x + w, img.width)
-        y2 = min(y + h, img.height)
-        cropped = img.crop((x, y, x2, y2))
-        cropped.save(path)
-        print(f"Скриншот описания сохранён: {path} (full_page crop, {cropped.height}px)")
-        return True
-
-    # === Режим 2: панель — scroll + stitch ===
-    OVERLAP = 100
-    vp = page.viewport_size or {"width": 1280, "height": 800}
-    vp_w, vp_h = vp["width"], vp["height"]
-    step = vp_h - OVERLAP
-
-    page.wait_for_timeout(300)
-    frames = []
-
-    for _ in range(20):
-        frame_bytes = page.screenshot()
-        frames.append(Image.open(BytesIO(frame_bytes)).copy())
-
-        end_visible = page.evaluate("""() => {
-            for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-                if (!(h.innerText || '').trim().match(/^Описание$/i)) continue;
-                if (!h.offsetParent) continue;
-                let lastEl = null, el = h.nextElementSibling;
-                while (el) {
-                    if ((el.innerText || '').trim().length > 0) lastEl = el;
-                    el = el.nextElementSibling;
-                }
-                if (!lastEl) return true;
-                return lastEl.getBoundingClientRect().bottom <= window.innerHeight + 4;
-            }
-            return true;
-        }""")
-        if end_visible:
-            break
-
-        scrolled = page.evaluate("""(step) => {
-            function getScrollContainer(el) {
-                let cur = el.parentElement;
-                while (cur && cur !== document.body) {
-                    const oy = getComputedStyle(cur).overflowY;
-                    if ((oy === 'auto' || oy === 'scroll') && cur.scrollHeight > cur.clientHeight)
-                        return cur;
-                    cur = cur.parentElement;
-                }
-                return null;
-            }
-            for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-                if (!(h.innerText || '').trim().match(/^Описание$/i)) continue;
-                if (!h.offsetParent) continue;
-                const c = getScrollContainer(h);
-                if (c) { const b = c.scrollTop; c.scrollTop += step; return c.scrollTop !== b; }
-                const b = window.scrollY; window.scrollBy(0, step); return window.scrollY !== b;
-            }
-            return false;
-        }""", step)
-        if not scrolled:
-            break
-        page.wait_for_timeout(200)
-
-    if len(frames) == 1:
-        frames[0].save(path)
-        print(f"Скриншот описания сохранён: {path} (1 кадр)")
-        return True
-
-    total_h = vp_h + (len(frames) - 1) * step
-    result = Image.new("RGB", (vp_w, total_h), (255, 255, 255))
-    result.paste(frames[0], (0, 0))
-    for i, frame in enumerate(frames[1:], 1):
-        result.paste(frame, (0, i * step))
-    result.save(path)
-    print(f"Скриншот описания сохранён: {path} ({len(frames)} кадров, {total_h}px)")
-    return True
-
-
-def screenshot_description_and_specs(page, path="description_section.png", selector=None, scroll_y=None):
-    """Два скриншота: начало и конец раздела.
-
-    scroll_y задан (heading-режим):
-        Скролим к абсолютной Y-позиции элемента, поднимаемся на 100px (чтобы захватить
-        характеристики выше), делаем скрин, опускаемся на 400px, делаем скрин.
-
-    scroll_y=None (panel-режим):
-        Находим самый большой видимый скролл-контейнер (панель), скролим его в начало,
-        делаем скрин, скролим в конец, делаем скрин.
+    Panel-режим (scroll_y=None):
+        Прокручиваем панель в начало → скриншот, прокручиваем в конец → скриншот.
     """
     base, ext = path.rsplit(".", 1) if "." in path else (path, "png")
-    path_start = f"{base}_start.{ext}"
-    path_end   = f"{base}_end.{ext}"
 
     if scroll_y is not None:
-        # === Heading-режим: описание на основной странице ===
+        # === Heading-режим ===
         page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 200))")
         page.wait_for_timeout(400)
 
-        page.screenshot(path=path_start)
-        print(f"Скриншот (начало) сохранён: {path_start}")
+        frame = 1
+        while frame <= 20:
+            frame_path = f"{base}_{frame}.{ext}"
+            make_main_screenshot(page, path=frame_path)
 
-        page.evaluate("window.scrollBy(0, 450)")
-        page.wait_for_timeout(400)
+            # Достигли нижней границы блока?
+            current_bottom = page.evaluate("window.scrollY + window.innerHeight")
+            if end_y is not None and current_bottom >= end_y:
+                h=0
+                while h < 2:
+                    h=h+1
+                    page.evaluate("window.scrollBy(0, 600)")
+                    page.wait_for_timeout(300)
+                    frame += 1
+                    frame_path = f"{base}_{frame}.{ext}"
+                    make_main_screenshot(page, path=frame_path)
+                print(f"  Достигнут конец блока (end_y={end_y}), кадров: {frame}")
+                break
 
-        page.screenshot(path=path_end)
-        print(f"Скриншот (конец) сохранён: {path_end}")
+            page.evaluate("window.scrollBy(0, 600)")
+            page.wait_for_timeout(300)
+            frame += 1
 
     else:
-        # === Panel-режим: описание в боковой панели ===
+        # === Panel-режим ===
         FIND_PANEL_JS = """() => {
             let best = null, bestArea = 0;
             for (const el of document.querySelectorAll('*')) {
@@ -899,15 +701,11 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
 
         page.evaluate(f"(() => {{ const p = ({FIND_PANEL_JS})(); if (p) p.scrollTop = 0; else window.scrollTo(0, 0); }})()")
         page.wait_for_timeout(400)
-
-        page.screenshot(path=path_start)
-        print(f"Скриншот панели (начало) сохранён: {path_start}")
+        make_main_screenshot(page, path=f"{base}_1.{ext}")
 
         page.evaluate(f"(() => {{ const p = ({FIND_PANEL_JS})(); if (p) p.scrollTop = p.scrollHeight; else window.scrollTo(0, document.body.scrollHeight); }})()")
         page.wait_for_timeout(400)
-
-        page.screenshot(path=path_end)
-        print(f"Скриншот панели (конец) сохранён: {path_end}")
+        make_main_screenshot(page, path=f"{base}_2.{ext}")
 
     return True
 
@@ -938,14 +736,20 @@ def process_modal_info(page):
                 if llm_is_description(text_for_llm):
                     print("  LLM: это описание")
                     expand_description(page, selector=result["selector"])
-                    # Перечитываем текст после раскрытия
-                    try:
-                        expanded_text = page.locator(result["selector"]).first.inner_text(timeout=3000)
-                    except Exception:
+                    # Повторно ищем элемент после раскрытия — берём и текст, и координаты
+                    # из одного источника, чтобы не использовать хрупкий старый селектор.
+                    page.wait_for_timeout(600)
+                    fresh = find_element_by_keyword(page, keyword)
+                    if fresh:
+                        expanded_text = fresh.get("text") or text
+                        end_y = fresh.get("endScrollY") or result.get("endScrollY")
+                    else:
                         expanded_text = text
+                        end_y = result.get("endScrollY")
+                    print(f"  end_y после раскрытия: {end_y}")
                     with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-                        f.write(expanded_text or text)
-                    screenshot_description_and_specs(page, str(back_dir / "description_section.png"), scroll_y=result.get("scrollY"))
+                        f.write(expanded_text)
+                    screenshot_description_and_specs(page, str(back_dir / "description_section.png"), scroll_y=result.get("scrollY"), end_y=end_y)
                     return
                 else:
                     print("  LLM: не описание, пробуем дальше.")
