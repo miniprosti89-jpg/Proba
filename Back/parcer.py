@@ -58,10 +58,7 @@ def open_site(p, url):
         chrome_path,
         f"--remote-debugging-port={DEBUG_PORT}",
         f"--user-data-dir={user_data_dir}",
-        "--start-maximized",
-        "--force-device-scale-factor=1",
-        "--device-scale-factor=1",
-        "--high-dpi-support=1"
+        "--start-maximized"
     ])
 
     print("Ожидание запуска браузера...")
@@ -82,27 +79,28 @@ def open_site(p, url):
 
 def llm_is_product_name(text):
     """Спрашивает LLM: является ли текст названием товара? Возвращает True/False."""
-    prompt = f"""You are a classifier. Answer with YES or NO, then elaborate why.
+    # --- Быстрые эвристики на Python (без LLM) ---
+    stripped = text.strip()
+    sentence_count = len(re.findall(r'[.!?][\s\n]', stripped)) + (1 if stripped and stripped[-1] in '.!?' else 0)
 
-Is the text below a PRODUCT NAME from an online marketplace?
+    # Явно слишком длинный текст с предложениями → точно не название
+    if len(stripped) > 300 and sentence_count >= 2:
+        print(f"  Эвристика: слишком длинный ({len(stripped)} симв., {sentence_count} предл.) → не название")
+        return False
 
-A product name is a noun phrase that identifies a specific product: it may include type, brand, specs, dosage, weight, quantity, flavour, or latin names. It does NOT contain full explanatory sentences.
+    prompt = f"""Answer YES or NO only.
 
-Say NO only if: the text is a generic UI label ("Описание", "Каталог", "Характеристики"), a promo phrase ("Хиты продаж"), or navigation text ("Добавить в корзину", "Доставка").
+Is the text below a UI navigation label or a generic section heading?
 
-EXAMPLES:
-- "Хлорофилл жидкий со вкусом мяты, 500 мл" -> YES
-- "Цинк Пиколинат, 25 мг, 120 капсул, VitaMeal, Zinc Picolinate" -> YES
-- "Смартфон Apple iPhone 17 Pro, 512 GB, Deep blue" -> YES
-- "Тетрадь для учёбы" -> YES
-- "Описание" -> NO
-- "Каталог товаров" -> NO
-- "Хиты продаж" -> NO
-- "Добавить в корзину" -> NO
+Say YES only if the text is clearly one of:
+- a single generic word: "Описание", "Каталог", "Характеристики", "Отзывы", "Главная"
+- a button or action phrase: "Добавить в корзину", "Купить сейчас", "Перейти", "Хиты продаж"
 
-Text: {text}
+Say NO in all other cases, including texts with commas, numbers, brackets, brand names, latin words, or benefit phrases.
 
-Answer only YES or NO"""
+Text: {stripped[:300]}
+
+YES or NO?"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -112,8 +110,10 @@ Answer only YES or NO"""
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip().upper()
-        print(f"  LLM-валидация: {answer[:500]}")
-        return answer.startswith("YES")
+        # Вопрос инвертированный: YES = мусор, NO = название
+        is_ui = answer.startswith("YES")
+        print(f"  LLM-валидация ({'UI-мусор' if is_ui else 'название'}): {answer[:200]}")
+        return not is_ui
     except Exception as e:
         print(f"  Ошибка LLM-валидации названия: {e}")
         return False
@@ -350,10 +350,12 @@ If none of these blocks is a description, reply with: NONE"""
 
 DESCRIPTION_KEYWORDS = [
     "Описание",
+    "описание",
     "Характеристики и описание",
     "О товаре",
     "Описание товара",
     "Характеристики",
+    "Подробное описание",
 ]
 
 EXPAND_KEYWORDS = [
@@ -421,7 +423,6 @@ def strip_heading(text, keyword):
 
 def llm_is_description(text):
     """Спрашивает LLM: является ли текст описанием товара? Возвращает True/False."""
-    # --- Быстрые эвристики на Python (без LLM) ---
     stripped = text.strip()
     sentence_count = len(re.findall(r'[.!?][\s\n]', stripped)) + (1 if stripped and stripped[-1] in '.!?' else 0)
 
@@ -430,32 +431,27 @@ def llm_is_description(text):
         print(f"  Эвристика: слишком короткий ({len(stripped)} симв.) → не описание")
         return False
 
-    # Длинный текст с предложениями → скорее всего описание, но всё равно проверяем LLM
-    # (вдруг это просто большой блок характеристик)
+    # Много предложений → точно описание, LLM не нужна
+    if sentence_count >= 3:
+        print(f"  Эвристика: {sentence_count} предложений → описание")
+        return True
 
-    prompt = f"""You are a classifier for marketplace product pages. Answer with YES or NO, then elaborate why.
+    # Пограничный случай (1–2 предложения) → спрашиваем LLM,
+    # но инвертированно: пусть отсеивает только явный мусор
+    prompt = f"""Answer YES or NO only.
 
-Does the text below belong to a product DESCRIPTION section?
+Is the text below a dry spec list, a navigation label, or a button text?
 
-A description contains full sentences that tell a story: what the product/ingredient is, how it works, benefits, effects, usage, or dosage. Educational content about an ingredient (e.g. "Что такое цинк?") also counts as YES.
+Say YES only if the text is clearly one of:
+- key-value spec lines only: "Артикул: 123. Вес: 100г. Страна: Россия."
+- navigation or button text: "Доставка. В корзину. Купить. Перейти."
+- a single-word section heading: "Описание", "Характеристики", "Отзывы"
 
-Say NO only if the text is:
-- a short product name or heading (no full sentences)
-- purely dry specs (weight, barcode, country — no explanatory sentences)
-- navigation or UI labels
+Say NO in all other cases.
 
-EXAMPLES:
-- "Что такое Цинк? Организм содержит до 2 г цинка. Концентрируется в печени и простате. Поддерживает иммунную систему." -> YES
-- "Коллаген – незаменимый компонент. Присутствует почти во всех тканях. Оказывает комплексное воздействие на организм." -> YES
-- "Беспроводная зарядка для Kindle. Заряжается автоматически за 2 часа." -> YES
-- "Хлорофилл жидкий со вкусом мяты, 500 мл" -> NO  (product name, no sentences)
-- "Артикул: 158457088. Страна: Россия. Вес нетто: 100г." -> NO  (dry specs)
-- "Доставка завтра. В корзину." -> NO  (UI)
+Text: {stripped[:500]}
 
-Text: {stripped[:10000]}
-
-Answer only YES or NO"""
-    # Answer with only one word: YES or NO.
+YES or NO?"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -465,8 +461,9 @@ Answer only YES or NO"""
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip().upper()
-        print(f"  LLM-валидация: {answer[:500]}")
-        return answer.startswith("YES")
+        is_junk = answer.startswith("YES")
+        print(f"  LLM-валидация ({'мусор' if is_junk else 'описание'}): {answer[:200]}")
+        return not is_junk
     except Exception as e:
         print(f"  Ошибка LLM-валидации: {e}")
         return False
@@ -591,59 +588,88 @@ def find_element_by_keyword(page, keyword):
     }""", keyword)
 
 
-def get_text_after_click(page):
-    """После клика ищет заголовок 'Описание' на странице и берёт текст после него."""
-    # Ищем любой ВИДИМЫЙ заголовок "Описание" на странице напрямую,
-    # без привязки к типу контейнера (модалка/panel/drawer — неважно)
-    desc = page.evaluate("""() => {
-        function buildSelector(el) {
-            if (el.id) return '#' + el.id;
-            if (el.className && typeof el.className === 'string') {
-                const classes = el.className.trim().split(/\\s+/).filter(c => c.length > 0);
-                const tag = el.tagName.toLowerCase();
-                const parent = el.parentElement;
-                if (parent) {
-                    const idx = [...parent.children].indexOf(el) + 1;
-                    const clsSel = classes.length > 0 ? '.' + classes.join('.') : '';
-                    return tag + clsSel + ':nth-child(' + idx + ')';
-                }
-                if (classes.length > 0) return tag + '.' + classes.join('.');
-            }
-            const parent = el.parentElement;
-            if (parent) {
-                const idx = [...parent.children].indexOf(el) + 1;
-                return el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
-            }
-            return el.tagName.toLowerCase();
+def get_text_after_click(page, keyword="Описание"):
+    """После клика ищет текст описания на странице.
+
+    Стратегии (по порядку):
+    1. Заголовок h1-h5 с текстом == keyword → берём sibling или родителя
+    2. Любой заголовок h1-h5 с keyword в тексте (частичное совпадение)
+    3. Фоллбэк: самый большой видимый прозаический блок на странице
+    """
+    desc = page.evaluate("""(kw) => {
+        function isVisible(el) {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight * 3;
         }
 
-        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-            if (!(h.innerText||'').trim().match(/^Описание$/i)) continue;
-            if (!h.offsetParent) continue;  // только видимые
+        function isProse(text) {
+            const sentences = (text.match(/[.!?][\\s\\n]/g) || []).length;
+            if (sentences < 1) return false;
+            const lines = text.split('\\n').filter(l => l.trim());
+            const shortLines = lines.filter(l => l.trim().length < 40).length;
+            return shortLines / lines.length < 0.6;
+        }
 
-            // Пробуем следующий sibling с достаточным текстом
+        function textFromHeading(h) {
+            // Ищем следующий sibling с достаточным текстом
             let sibling = h.nextElementSibling;
             while (sibling) {
-                const text = (sibling.innerText || '').trim();
-                if (text.length > 100) {
-                    h.scrollIntoView({behavior:'instant', block:'start'});
-                    return { selector: buildSelector(sibling), text: text };
+                const t = (sibling.innerText || '').trim();
+                if (t.length > 100) {
+                    h.scrollIntoView({behavior: 'instant', block: 'start'});
+                    return t;
                 }
                 sibling = sibling.nextElementSibling;
             }
-
-            // Фоллбэк — родительский контейнер
+            // Фоллбэк — родитель
             const section = h.parentElement;
-            if (section && (section.innerText||'').trim().length > 100) {
-                h.scrollIntoView({behavior:'instant', block:'start'});
-                return { selector: buildSelector(section), text: (section.innerText||'').trim() };
+            if (section) {
+                const t = (section.innerText || '').trim();
+                if (t.length > 100) {
+                    h.scrollIntoView({behavior: 'instant', block: 'start'});
+                    return t;
+                }
             }
+            return null;
         }
+
+        const kwLower = kw.toLowerCase();
+
+        // Проход 1: точное совпадение заголовка
+        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
+            const t = (h.innerText || '').trim();
+            if (t.toLowerCase() !== kwLower) continue;
+            if (!isVisible(h)) continue;
+            const text = textFromHeading(h);
+            if (text) return { text };
+        }
+
+        // Проход 2: частичное совпадение заголовка
+        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
+            const t = (h.innerText || '').trim().toLowerCase();
+            if (!t.includes(kwLower)) continue;
+            if (!isVisible(h)) continue;
+            const text = textFromHeading(h);
+            if (text) return { text };
+        }
+
+        // Проход 3: самый большой видимый прозаический блок
+        let bestEl = null, bestLen = 0;
+        for (const el of document.querySelectorAll('p, div, section, article')) {
+            if (el.children.length > 5) continue;
+            if (!isVisible(el)) continue;
+            const t = (el.innerText || '').trim();
+            if (t.length < 150) continue;
+            if (!isProse(t)) continue;
+            if (t.length > bestLen) { bestLen = t.length; bestEl = el; }
+        }
+        if (bestEl) return { text: (bestEl.innerText || '').trim() };
+
         return null;
-    }""")
+    }""", keyword)
+
     if desc and desc.get("text"):
         return desc
-
     return None
 
 
@@ -779,7 +805,7 @@ def process_modal_info(page):
                     continue
                 page.wait_for_timeout(2000)
 
-                after = get_text_after_click(page)
+                after = get_text_after_click(page, keyword)
                 if not after or not after.get("text"):
                     print("  После клика текст не найден.")
                     continue
@@ -795,7 +821,7 @@ def process_modal_info(page):
                     print("  LLM: это описание")
                     expand_description(page)
                     # Перечитываем текст после раскрытия
-                    after_expanded = get_text_after_click(page)
+                    after_expanded = get_text_after_click(page, keyword)
                     expanded_text = after_expanded.get("text") if after_expanded else None
                     with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
                         f.write(expanded_text or text)

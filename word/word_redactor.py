@@ -17,7 +17,7 @@ import sys
 import os
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
-
+from urllib.parse import urlparse
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ТЕКСТЫ РЕШЕНИЙ ПО КРИТЕРИЯМ
@@ -67,12 +67,18 @@ def fill_template(template_path: str, report: dict,
 
     url = report["url"]
 
-    # Формируем список абзацев решения (по одному на каждый критерий)
+    # парсинг названия сайта
+    parsed = urlparse(url)
+    site = parsed.netloc  # www.ozon.ru
+    site = site.replace("www.", "")  # ozon.ru
+    print(site)
 
+    # Формируем список абзацев решения (по одному на каждый критерий)
     decisions = build_decision_text(criteria_nums, url)
     context = {
         "time": report.get("time", ""),
         "url":   report.get("url", ""),
+        "site": site,
         "tovar": report.get("tovar", ""),
         "desc": report.get("desc", ""),
         "resh": decisions,
