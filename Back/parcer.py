@@ -77,6 +77,119 @@ def open_site(p, url):
     return browser, page
 
 
+SERVICE_WORDS = [
+    "описание", "доставка", "возврат", "оплата", "отзыв", "гарантия",
+    "характеристики", "похожие товары", "с этим товаром", "подборки",
+    "преимущества", "состав", "инструкция", "вопросы и ответы", "о товаре",
+    "рекомендуем", "вам может понравиться", "хиты продаж", "акции",
+    "валюта", "покупателям", "продавцам", "наши проекты", "компания",
+    "приложение", "каталог", "корзина", "избранное",
+]
+
+# Слоганы сайта в og:title / <title>, которые не являются названием товара.
+GENERIC_MARKERS = [
+    "широкий ассортимент", "скидки каждый день", "ассортимент товаров",
+    "официальный сайт", "лучшие цены", "купить онлайн", "каталог товаров",
+    "интернет-магазин", "online store",
+]
+
+
+def is_service_heading(text):
+    """True, если заголовок — служебный раздел сайта, а не название товара."""
+    t = text.strip().lower()
+    return any(sw in t for sw in SERVICE_WORDS)
+
+
+def is_generic_tagline(text):
+    """True, если текст — это общий слоган сайта, а не название товара."""
+    t = text.strip().lower()
+    return any(m in t for m in GENERIC_MARKERS)
+
+
+def looks_like_product_name(text):
+    """Грубая проверка: похож ли текст на название товара."""
+    t = text.strip()
+    if len(t) < 10:
+        return False
+    if is_service_heading(t) or is_generic_tagline(t):
+        return False
+    # Чистое число / рейтинг / цена
+    if re.fullmatch(r'[\d\s.,%?₽$]+', t):
+        return False
+    # Нет ни одного нормального слова
+    if not re.search(r'[A-Za-zА-Яа-яЁё]{3,}', t):
+        return False
+    return True
+
+
+def extract_from_title(title):
+    """Вытаскивает название товара из <title>.
+
+    Типичный <title> страницы товара:
+      "Название товара БРЕНД 123456 купить за 2 843 ₽ в интернет-магазине Сайт"
+    Отрезаем имя сайта (по разделителям), хвост "купить ...", "за NNN ..."
+    и артикул (длинную последовательность цифр).
+    """
+    if not title:
+        return ""
+    seg = title.strip()
+    # Убираем ведущее "Купить "
+    seg = re.sub(r'^купить\s+', '', seg, flags=re.IGNORECASE)
+    # Отрезаем хвост "... купить ..." и "... за NNN ..."
+    seg = re.split(r'\s+купить\b', seg, flags=re.IGNORECASE)[0]
+    seg = re.split(r'\s+за\s+\d', seg, flags=re.IGNORECASE)[0]
+    # Отрезаем артикул и всё после него
+    seg = re.sub(r'\s+\d{5,}.*$', '', seg)
+    # Если остались разделители имени сайта (— | – /) — берём самый длинный сегмент.
+    # Обычный дефис не используем: он встречается внутри названий товаров.
+    parts = re.split(r'\s[—|–/]\s', seg)
+    if len(parts) > 1:
+        seg = max(parts, key=len)
+    # Зачищаем концы от висящих разделителей (напр. "– " перед отрезанным "купить")
+    return seg.strip(" \t\r\n–—|/·•")
+
+
+def pick_product_name(headings, og_title, doc_title):
+    """Каскад выбора названия товара: <title> → og:title → <h1> → фильтр + LLM.
+
+    Порядок основан на надёжности сигнала. <title> почти всегда содержит
+    название товара в начале (требование SEO). LLM — последний резерв,
+    когда более надёжные сигналы не дали однозначного результата.
+    """
+    h1s = [h for h in headings if h["tag"] == "h1"]
+
+    # --- Шаг 1: <title> — самый надёжный сигнал на странице товара ---
+    title_name = extract_from_title(doc_title)
+    if looks_like_product_name(title_name):
+        print(f"  Каскад: из <title> → {title_name[:80]}")
+        return title_name
+
+    # --- Шаг 2: мета-тег og:title (если это не слоган сайта) ---
+    if og_title and looks_like_product_name(og_title):
+        print(f"  Каскад: из og:title → {og_title[:80]}")
+        return og_title
+
+    # --- Шаг 3: единственный <h1>, если похож на название ---
+    if len(h1s) == 1 and looks_like_product_name(h1s[0]["text"]):
+        print(f"  Каскад: единственный <h1> → {h1s[0]['text'][:80]}")
+        return h1s[0]["text"]
+
+    # --- Шаг 4: отбрасываем служебные/мусорные заголовки ---
+    candidates = [h for h in headings if looks_like_product_name(h["text"])]
+
+    if len(candidates) == 1:
+        print("  Каскад: единственный кандидат после фильтра")
+        return candidates[0]["text"]
+
+    if not candidates:
+        print("  Каскад: кандидатов не осталось")
+        return None
+
+    # --- Шаг 5: несколько кандидатов → отдаём короткий список LLM ---
+    print(f"  Каскад: {len(candidates)} кандидатов → спрашиваем LLM")
+    return llm_pick_product_name(candidates)
+
+
 def llm_pick_product_name(headings):
     """Отправляет все заголовки в LLM и просит выбрать название товара.
     Возвращает текст выбранного заголовка или None."""
@@ -132,7 +245,7 @@ def save_product_info(page):
     except Exception:
         print("  Предупреждение: h1/h2 не появились за 10с, пробуем всё равно.")
 
-    headings = page.evaluate("""() => {
+    data = page.evaluate("""() => {
         const result = [];
         for (const tag of ['h1', 'h2']) {
             for (const el of document.querySelectorAll(tag)) {
@@ -141,16 +254,27 @@ def save_product_info(page):
                 result.push({ tag, text });
             }
         }
-        return result;
+        const ogEl = document.querySelector('meta[property="og:title"]');
+        return {
+            headings: result,
+            ogTitle: ogEl ? (ogEl.content || '').trim() : '',
+            docTitle: (document.title || '').trim()
+        };
     }""")
+
+    headings = data["headings"]
+    og_title = data["ogTitle"]
+    doc_title = data["docTitle"]
 
     h1s = [h for h in headings if h['tag'] == 'h1']
     h2s = [h for h in headings if h['tag'] == 'h2']
     print(f"  Найдено заголовков: h1={len(h1s)}, h2={len(h2s)}")
     for h in headings:
         print(f"    [{h['tag']}] {h['text'][:100]}")
+    print(f"  og:title: {og_title[:100]}")
+    print(f"  <title>: {doc_title[:100]}")
 
-    name = llm_pick_product_name(headings)
+    name = pick_product_name(headings, og_title, doc_title)
 
     if name:
         print(f"  LLM: название товара → {name[:80]}")
