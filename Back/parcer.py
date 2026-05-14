@@ -88,19 +88,36 @@ def llm_is_product_name(text):
         print(f"  Эвристика: слишком длинный ({len(stripped)} симв., {sentence_count} предл.) → не название")
         return False
 
-    prompt = f"""Answer YES or NO only.
+    prompt = f"""Тебе будет передан текст, который является заголовком страницы (обычно это тег h1 или h2 на странице маркетплейса).
 
-Is the text below a UI navigation label or a generic section heading?
+Задача: определить, является ли этот текст названием товара.
+Правила принятия решения
 
-Say YES only if the text is clearly one of:
-- a single generic word: "Описание", "Каталог", "Характеристики", "Отзывы", "Главная"
-- a button or action phrase: "Добавить в корзину", "Купить сейчас", "Перейти", "Хиты продаж"
+    Если текст содержит название товара, его бренд, модель, основные характеристики и не содержит служебных слов вроде «Доставка», «Оплата», «Отзывы», «Гарантия», «Описание», «Характеристики» — это название товара.
+    Если текст — это раздел страницы (например, «Описание», «Отзывы», «Доставка», «Гарантия», «С этим товаром покупают», «Похожие товары») — это не название товара.
+    Если текст содержит только бренд или только категорию без конкретного товара — это не название товара.
+    Если текст — это подзаголовок к разделу (например, «Преимущества», «Состав», «Инструкция по применению») — это не название товара.
 
-Say NO in all other cases, including texts with commas, numbers, brackets, brand names, latin words, or benefit phrases.
+Примеры
+Текст	Ответ	Комментарий
+Цинк витамины пиколинат 25 мг Vitameal для иммунитета для кожи 120 капсул Zinc Picolinate	Да	Полное название товара с брендом и характеристиками
+Описание	Нет	Служебный раздел
+Отзывы (0)	Нет	Служебный раздел
+Доставка и оплата	Нет	Служебный раздел
+Коллаген гиалуроновая кислота витамин С 200 г апельсин Optimum System Beauty Wellness	Да	Полное название товара с брендом и характеристиками
+Похожие товары	Нет	Служебный раздел
+Формат ответа
 
+В ответе напиши:
+
+    «Да», если это название товара.
+    «Нет», если это не название товара.
+    И кратко объясни почему
+Важное замечание
+
+Не используй ничего, кроме предоставленного текста. Не делай предположений на основе внешнего вида или структуры страницы. Твой ответ должен быть основан только на содержании переданного текста.
 Text: {stripped[:300]}
-
-YES or NO?"""
+"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -109,11 +126,10 @@ YES or NO?"""
             "options": {"temperature": 0.0}
         }, timeout=60)
         resp.raise_for_status()
-        answer = resp.json()["response"].strip().upper()
-        # Вопрос инвертированный: YES = мусор, NO = название
-        is_ui = answer.startswith("YES")
-        print(f"  LLM-валидация ({'UI-мусор' if is_ui else 'название'}): {answer[:200]}")
-        return not is_ui
+        answer = resp.json()["response"].strip()
+        is_product = answer.lower().startswith("да")
+        print(f"  LLM-валидация ({'название' if is_product else 'не название'}): {answer[:200]}")
+        return is_product
     except Exception as e:
         print(f"  Ошибка LLM-валидации названия: {e}")
         return False
@@ -436,22 +452,29 @@ def llm_is_description(text):
         print(f"  Эвристика: {sentence_count} предложений → описание")
         return True
 
-    # Пограничный случай (1–2 предложения) → спрашиваем LLM,
-    # но инвертированно: пусть отсеивает только явный мусор
-    prompt = f"""Answer YES or NO only.
+    # Пограничный случай (1–2 предложения) → спрашиваем LLM
+    prompt = f"""Тебе будет передан текст со страницы товара.
 
-Is the text below a dry spec list, a navigation label, or a button text?
+Задача: определить, является ли этот текст описанием товара.
 
-Say YES only if the text is clearly one of:
-- key-value spec lines only: "Артикул: 123. Вес: 100г. Страна: Россия."
-- navigation or button text: "Доставка. В корзину. Купить. Перейти."
-- a single-word section heading: "Описание", "Характеристики", "Отзывы"
+Правила принятия решения:
+- Описание товара — связный текст о товаре: что это, как работает, состав, преимущества, польза.
+- НЕ описание: список характеристик (ключ: значение), навигационные ссылки, кнопки, заголовки разделов, отзывы, информация о доставке и оплате.
 
-Say NO in all other cases.
+Примеры:
+Текст: "Коллаген – незаменимый для организма компонент. Он обеспечивает упругость кожи и здоровье суставов."
+Ответ: Да
 
-Text: {stripped[:500]}
+Текст: "Артикул: 12345. Вес: 200г. Страна производства: Россия."
+Ответ: Нет
 
-YES or NO?"""
+Текст: "Доставка. В корзину. Купить сейчас. Перейти."
+Ответ: Нет
+
+Формат ответа: напиши только «Да» или «Нет».
+
+Текст: {stripped[:500]}
+"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -460,10 +483,10 @@ YES or NO?"""
             "options": {"temperature": 0.0}
         }, timeout=60)
         resp.raise_for_status()
-        answer = resp.json()["response"].strip().upper()
-        is_junk = answer.startswith("YES")
-        print(f"  LLM-валидация ({'мусор' if is_junk else 'описание'}): {answer[:200]}")
-        return not is_junk
+        answer = resp.json()["response"].strip()
+        is_desc = answer.lower().startswith("да")
+        print(f"  LLM-валидация ({'описание' if is_desc else 'мусор'}): {answer[:200]}")
+        return is_desc
     except Exception as e:
         print(f"  Ошибка LLM-валидации: {e}")
         return False
