@@ -77,39 +77,29 @@ def open_site(p, url):
     return browser, page
 
 
-def llm_is_product_name(text):
-    """Спрашивает LLM: является ли текст названием товара? Возвращает True/False."""
-    # --- Быстрые эвристики на Python (без LLM) ---
-    stripped = text.strip()
-    sentence_count = len(re.findall(r'[.!?][\s\n]', stripped)) + (1 if stripped and stripped[-1] in '.!?' else 0)
+def llm_pick_product_name(headings):
+    """Отправляет все заголовки в LLM и просит выбрать название товара.
+    Возвращает текст выбранного заголовка или None."""
+    if not headings:
+        return None
 
-    # Явно слишком длинный текст с предложениями → точно не название
-    if len(stripped) > 300 and sentence_count >= 2:
-        print(f"  Эвристика: слишком длинный ({len(stripped)} симв., {sentence_count} предл.) → не название")
-        return False
+    items = ""
+    for i, h in enumerate(headings):
+        items += f"[{i}] ({h['tag']}): {h['text'][:200]}\n"
 
-    prompt = f"""Тебе будет передан текст, который является заголовком страницы маркетплейса.
+    prompt = f"""Тебе дан список заголовков со страницы маркетплейса.
 
-Задача: определить, является ли этот текст названием товара.
+Задача: выбрать тот, который является названием товара.
 
-Правила:
-- Название товара — это конкретное описание продукта: тип товара, вкус, объём, вес, назначение, модель. Бренд необязателен.
-- НЕ название товара: служебные разделы сайта («Описание», «Отзывы», «Доставка», «Гарантия», «Похожие товары», «С этим товаром покупают», «Характеристики», «Преимущества», «Состав»).
-- НЕ название товара: одиночное слово без конкретики (только категория или только бренд).
+Название товара — конкретное описание продукта: тип, вкус, объём, вес, назначение, модель. Бренд необязателен.
+НЕ название: служебные разделы («Описание», «Отзывы», «Доставка», «Гарантия», «Характеристики», «Похожие товары», «Преимущества», «Состав» и т.п.)
 
-Примеры:
-Текст: "Хлорофилл жидкий со вкусом мяты, 500 мл" → Да (конкретный товар с объёмом и вкусом)
-Текст: "Цинк пиколинат 25 мг Vitameal 120 капсул" → Да (товар с характеристиками и брендом)
-Текст: "Коллаген гиалуроновая кислота витамин С 200 г апельсин" → Да (товар без бренда — всё равно название)
-Текст: "Описание" → Нет (служебный раздел)
-Текст: "Отзывы (0)" → Нет (служебный раздел)
-Текст: "Доставка и оплата" → Нет (служебный раздел)
-Текст: "Похожие товары" → Нет (служебный раздел)
+Примеры названий: "Хлорофилл жидкий со вкусом мяты, 500 мл", "Цинк пиколинат 25 мг 120 капсул", "Коллаген витамин С 200 г апельсин"
 
-Формат ответа: напиши только «Да» или «Нет».
+Заголовки:
+{items}
+Ответь только номером в квадратных скобках, например: [2]"""
 
-Текст: {stripped[:300]}
-"""
     try:
         resp = requests.post(OLLAMA_URL, json={
             "model": OLLAMA_MODEL,
@@ -119,16 +109,23 @@ def llm_is_product_name(text):
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip()
-        is_product = answer.lower().startswith("да")
-        print(f"  LLM-валидация ({'название' if is_product else 'не название'}): {answer[:200]}")
-        return is_product
+        print(f"  LLM выбрал: {answer[:200]}")
+
+        if "NONE" in answer.upper():
+            return None
+        match = re.search(r'\[(\d+)\]', answer)
+        if match:
+            idx = int(match.group(1))
+            if 0 <= idx < len(headings):
+                return headings[idx]["text"]
+        return None
     except Exception as e:
-        print(f"  Ошибка LLM-валидации названия: {e}")
-        return False
+        print(f"  Ошибка LLM-выбора названия: {e}")
+        return None
 
 
 def save_product_info(page):
-    """Ищет название товара среди h1/h2 с LLM-валидацией. Сохраняет в product_name.txt."""
+    """Ищет название товара среди h1/h2 через LLM. Сохраняет в product_name.txt."""
 
     try:
         page.wait_for_selector('h1, h2', timeout=10000)
@@ -150,21 +147,19 @@ def save_product_info(page):
     h1s = [h for h in headings if h['tag'] == 'h1']
     h2s = [h for h in headings if h['tag'] == 'h2']
     print(f"  Найдено заголовков: h1={len(h1s)}, h2={len(h2s)}")
-
     for h in headings:
-        text = h['text']
-        print(f"\n--- Проверяем {h['tag']}: {text[:80]}{'...' if len(text) > 80 else ''} ---")
-        if llm_is_product_name(text):
-            print("  LLM: это название товара")
-            with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
-                f.write(text)
-            print(f"  Название сохранено: {text[:80]}")
-            return
-        print("  LLM: не название, пробуем дальше.")
+        print(f"    [{h['tag']}] {h['text'][:100]}")
 
-    print("  Название товара не найдено ни в одном h1/h2.")
-    with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
-        f.write("Название не найдено")
+    name = llm_pick_product_name(headings)
+
+    if name:
+        print(f"  LLM: название товара → {name[:80]}")
+        with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
+            f.write(name)
+    else:
+        print("  Название товара не найдено.")
+        with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
+            f.write("Название не найдено")
 
 
 def make_main_screenshot(page, path=None):
