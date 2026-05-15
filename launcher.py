@@ -18,27 +18,25 @@ def get_streamlit_cmd(python_exe):
 
     Приоритет:
     1. Scripts/streamlit.exe — стандартный путь после pip install в embedded Python
-    2. python -c "from ... import main; main()" — когда Scripts не создан.
-       Определяем нужный модуль: streamlit.web.cli (>= 1.12) или streamlit.cli (< 1.12).
+    2. _streamlit_runner.py — маленький скрипт с try/except, работает
+       и со старым (< 1.12, streamlit.cli) и с новым (>= 1.12, streamlit.web.cli).
     """
     python_path = Path(python_exe)
     streamlit_exe = python_path.parent / "Scripts" / "streamlit.exe"
     if streamlit_exe.exists():
         return [str(streamlit_exe)]
 
-    # Определяем, какой CLI-модуль доступен в установленной версии streamlit
-    probe = subprocess.run(
-        [python_exe, "-c",
-         "import importlib.util; "
-         "print('new' if importlib.util.find_spec('streamlit.web.cli') else 'old')"],
-        capture_output=True, text=True
+    # Создаём вспомогательный скрипт рядом с launcher.py
+    runner = Path(__file__).parent / "_streamlit_runner.py"
+    runner.write_text(
+        "try:\n"
+        "    from streamlit.web.cli import main\n"
+        "except ImportError:\n"
+        "    from streamlit.cli import main\n"
+        "main()\n",
+        encoding="utf-8"
     )
-    if probe.stdout.strip() == "new":
-        cli_code = "from streamlit.web.cli import main; main()"
-    else:
-        cli_code = "from streamlit.cli import main; main()"
-
-    return [python_exe, "-c", cli_code]
+    return [python_exe, str(runner)]
 
 
 def main():
