@@ -1,5 +1,7 @@
 import sys
 import subprocess
+import threading
+import webbrowser
 from pathlib import Path
 
 
@@ -9,6 +11,17 @@ def get_python():
     if embedded.exists():
         return str(embedded)
     return sys.executable
+
+
+def get_streamlit_cmd(python_exe):
+    """Возвращает команду для запуска streamlit.
+    В embedded Python 'python -m streamlit' не работает — используем Scripts/streamlit.exe."""
+    python_path = Path(python_exe)
+    streamlit_exe = python_path.parent / "Scripts" / "streamlit.exe"
+    if streamlit_exe.exists():
+        return [str(streamlit_exe)]
+    # Фоллбэк: системный Python, там -m streamlit работает
+    return [python_exe, "-m", "streamlit"]
 
 
 def main():
@@ -30,7 +43,13 @@ def main():
         print("Для остановки нажмите Ctrl+C")
         print("=" * 50)
 
-        subprocess.run([python_exe, "-m", "streamlit", "run", str(web_path)])
+        streamlit_cmd = get_streamlit_cmd(python_exe)
+        proc = subprocess.Popen([*streamlit_cmd, "run", str(web_path),
+                                  "--server.headless=true",
+                                  "--browser.gatherUsageStats=false"])
+        # Открываем браузер через 3 секунды — после старта сервера
+        threading.Timer(0.0, lambda: webbrowser.open("http://localhost:8501")).start()
+        proc.wait()
     except KeyboardInterrupt:
         print("\nПриложение остановлено пользователем")
     except Exception as e:
