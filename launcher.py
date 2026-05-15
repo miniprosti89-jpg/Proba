@@ -85,7 +85,7 @@ def main():
                                   "--server.headless=true",
                                   "--browser.gatherUsageStats=false"])
         # Открываем браузер через 3 секунды — после старта сервера
-        threading.Timer(5.0, lambda: webbrowser.open("http://localhost:8501")).start()
+        threading.Timer(1.0, lambda: webbrowser.open("http://localhost:8501")).start()
         proc.wait()
     except KeyboardInterrupt:
         print("\nПриложение остановлено пользователем")
