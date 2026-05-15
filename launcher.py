@@ -26,14 +26,36 @@ def get_streamlit_cmd(python_exe):
     if streamlit_exe.exists():
         return [str(streamlit_exe)]
 
-    # Создаём вспомогательный скрипт рядом с launcher.py
+    # Создаём вспомогательный скрипт рядом с launcher.py.
+    # Он перебирает все известные точки входа streamlit разных версий
+    # и в случае провала печатает диагностику.
     runner = Path(__file__).parent / "_streamlit_runner.py"
     runner.write_text(
-        "try:\n"
-        "    from streamlit.web.cli import main\n"
-        "except ImportError:\n"
-        "    from streamlit.cli import main\n"
-        "main()\n",
+        "import importlib, pkgutil, sys\n"
+        "import streamlit\n"
+        "print('Streamlit version:', getattr(streamlit, '__version__', '?'))\n"
+        "print('Streamlit path:', streamlit.__file__)\n"
+        "candidates = [\n"
+        "    'streamlit.web.cli',      # >= 1.12\n"
+        "    'streamlit.cli',          # < 1.12\n"
+        "    'streamlit.web.bootstrap',\n"
+        "    'streamlit.bootstrap',\n"
+        "    'streamlit.__main__',\n"
+        "]\n"
+        "for name in candidates:\n"
+        "    try:\n"
+        "        mod = importlib.import_module(name)\n"
+        "    except ImportError:\n"
+        "        continue\n"
+        "    if hasattr(mod, 'main'):\n"
+        "        print('Using entry point:', name + '.main()')\n"
+        "        mod.main()\n"
+        "        sys.exit(0)\n"
+        "print('ERROR: no streamlit CLI entry point found')\n"
+        "print('Available submodules in streamlit:')\n"
+        "for _, modname, ispkg in pkgutil.iter_modules(streamlit.__path__):\n"
+        "    print('   ', modname, '(package)' if ispkg else '')\n"
+        "sys.exit(1)\n",
         encoding="utf-8"
     )
     return [python_exe, str(runner)]
