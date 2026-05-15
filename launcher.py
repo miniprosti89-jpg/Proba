@@ -15,13 +15,19 @@ def get_python():
 
 def get_streamlit_cmd(python_exe):
     """Возвращает команду для запуска streamlit.
-    В embedded Python 'python -m streamlit' не работает — используем Scripts/streamlit.exe."""
+
+    Приоритет:
+    1. Scripts/streamlit.exe — стандартный путь после pip install в embedded Python
+    2. python -c "from streamlit.web.cli import main; main()" — работает когда
+       Scripts не создан, но пакет установлен (python -m streamlit не работает
+       в embedded Python, т.к. нет __main__.py)
+    """
     python_path = Path(python_exe)
     streamlit_exe = python_path.parent / "Scripts" / "streamlit.exe"
     if streamlit_exe.exists():
         return [str(streamlit_exe)]
-    # Фоллбэк: системный Python, там -m streamlit работает
-    return [python_exe, "-m", "streamlit"]
+    # Фоллбэк через CLI-точку входа — работает в embedded Python
+    return [python_exe, "-c", "from streamlit.web.cli import main; main()"]
 
 
 def main():
@@ -48,7 +54,7 @@ def main():
                                   "--server.headless=true",
                                   "--browser.gatherUsageStats=false"])
         # Открываем браузер через 3 секунды — после старта сервера
-        threading.Timer(0.0, lambda: webbrowser.open("http://localhost:8501")).start()
+        threading.Timer(5.0, lambda: webbrowser.open("http://localhost:8501")).start()
         proc.wait()
     except KeyboardInterrupt:
         print("\nПриложение остановлено пользователем")
