@@ -65,6 +65,13 @@ if errorlevel 1 (
 
 
 
+:: Disable Streamlit onboarding email prompt
+if not exist "%~dp0_python\.streamlit" mkdir "%~dp0_python\.streamlit"
+if not exist "%~dp0_python\.streamlit\credentials.toml" (
+    echo [general]> "%~dp0_python\.streamlit\credentials.toml"
+    echo email = "">> "%~dp0_python\.streamlit\credentials.toml"
+)
+
 :: Launch the app
 echo.
 echo Starting app...
@@ -76,5 +83,7 @@ echo ====================================
 if errorlevel 1 (
     echo.
     echo [ERROR] App exited with an error.
+    pause
+) else (
     pause
 )
