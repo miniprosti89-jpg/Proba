@@ -18,16 +18,27 @@ def get_streamlit_cmd(python_exe):
 
     Приоритет:
     1. Scripts/streamlit.exe — стандартный путь после pip install в embedded Python
-    2. python -c "from streamlit.web.cli import main; main()" — работает когда
-       Scripts не создан, но пакет установлен (python -m streamlit не работает
-       в embedded Python, т.к. нет __main__.py)
+    2. python -c "from ... import main; main()" — когда Scripts не создан.
+       Определяем нужный модуль: streamlit.web.cli (>= 1.12) или streamlit.cli (< 1.12).
     """
     python_path = Path(python_exe)
     streamlit_exe = python_path.parent / "Scripts" / "streamlit.exe"
     if streamlit_exe.exists():
         return [str(streamlit_exe)]
-    # Фоллбэк через CLI-точку входа — работает в embedded Python
-    return [python_exe, "-c", "from streamlit.web.cli import main; main()"]
+
+    # Определяем, какой CLI-модуль доступен в установленной версии streamlit
+    probe = subprocess.run(
+        [python_exe, "-c",
+         "import importlib.util; "
+         "print('new' if importlib.util.find_spec('streamlit.web.cli') else 'old')"],
+        capture_output=True, text=True
+    )
+    if probe.stdout.strip() == "new":
+        cli_code = "from streamlit.web.cli import main; main()"
+    else:
+        cli_code = "from streamlit.cli import main; main()"
+
+    return [python_exe, "-c", cli_code]
 
 
 def main():
