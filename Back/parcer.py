@@ -32,68 +32,75 @@ def open_site(p, url):
     """Запуск браузера и переход на страницу (поддерживает Linux и Windows)."""
     DEBUG_PORT = "9222"
 
-    # Определяем путь к браузеру и папку пользовательских данных в зависимости от ОС
-    if os.name == "posix":  # Linux / macOS
-        chrome_path = "chromium"  # предполагается, что chromium установлен в PATH
-        user_data_dir = f"/tmp/playwright-{os.getpid()}"
-    elif os.name == "nt":  # Windows
-        possible_paths = [
-            # Google Chrome
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-            os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
-            # Microsoft Edge (Chromium) — на Windows обычно предустановлен
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            # Яндекс.Браузер (Chromium)
-            os.path.expandvars(r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"),
-            r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe",
-            r"C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe",
-            # Chromium (открытый движок, ставится в профиль пользователя)
-            os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
-        ]
-        chrome_path = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                chrome_path = path
-                break
-        if chrome_path is None:
-            raise FileNotFoundError("Не найден ни один поддерживаемый браузер (Chrome/Edge/Яндекс). Проверьте пути в possible_paths.")
-        # Уникальная папка профиля на каждый запуск: если предыдущий запуск
-        # не закрыл браузер штатно (завис / был убит через диспетчер задач),
-        # в общей папке остаётся файл-блокировка профиля (SingletonLock),
-        # из-за которого новый браузер видит "занятый" профиль и тихо не
-        # открывает отладочный порт — Playwright потом падает с ECONNREFUSED.
-        user_data_dir = os.path.join(r"C:\Temp", f"chrome-debug-{os.getpid()}")
-    else:
-        raise OSError(f"Unsupported OS: {os.name}")
+    # Если браузер с прошлого запуска ещё жив (отладочный порт уже отвечает) —
+    # переиспользуем его и просто открываем новую вкладку, вместо того чтобы
+    # плодить новые окна и терять куки/сессию сайта.
+    try:
+        browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}", timeout=2000)
+        print("Найден уже запущенный браузер — открываем новую вкладку.")
+    except Exception:
+        browser = None
 
-    print(f"Запуск браузера: {chrome_path}")
-    # Запускаем браузер с отладочным портом
-    subprocess.Popen([
-        chrome_path,
-        f"--remote-debugging-port={DEBUG_PORT}",
-        f"--user-data-dir={user_data_dir}",
-        "--start-maximized"
-    ])
-
-    print("Ожидание запуска браузера...")
-    browser = None
-    last_error = None
-    for attempt in range(30):
-        time.sleep(1)
-        try:
-            browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
-            break
-        except Exception as e:
-            last_error = e
     if browser is None:
-        raise RuntimeError(
-            f"Не удалось подключиться к браузеру ({chrome_path}) за 30с. "
-            f"Закройте все окна этого браузера и попробуйте снова. "
-            f"Последняя ошибка: {last_error}"
-        )
+        # Определяем путь к браузеру и папку пользовательских данных в зависимости от ОС
+        if os.name == "posix":  # Linux / macOS
+            chrome_path = "chromium"  # предполагается, что chromium установлен в PATH
+            user_data_dir = "/tmp/playwright-profile"
+        elif os.name == "nt":  # Windows
+            possible_paths = [
+                # Google Chrome
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
+                # Microsoft Edge (Chromium) — на Windows обычно предустановлен
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                # Яндекс.Браузер (Chromium)
+                os.path.expandvars(r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"),
+                r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe",
+                r"C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe",
+                # Chromium (открытый движок, ставится в профиль пользователя)
+                os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
+            ]
+            chrome_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    chrome_path = path
+                    break
+            if chrome_path is None:
+                raise FileNotFoundError("Не найден ни один поддерживаемый браузер (Chrome/Edge/Яндекс). Проверьте пути в possible_paths.")
+            # Один и тот же профиль на все запуски — сохраняет куки и сессию
+            # сайта между запусками (иначе каждый заход выглядит первым).
+            user_data_dir = r"C:\Temp\chrome-debug"
+        else:
+            raise OSError(f"Unsupported OS: {os.name}")
+
+        print(f"Запуск браузера: {chrome_path}")
+        # Запускаем браузер с отладочным портом
+        subprocess.Popen([
+            chrome_path,
+            f"--remote-debugging-port={DEBUG_PORT}",
+            f"--user-data-dir={user_data_dir}",
+            "--start-maximized"
+        ])
+
+        print("Ожидание запуска браузера...")
+        last_error = None
+        for attempt in range(30):
+            time.sleep(1)
+            try:
+                browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+                break
+            except Exception as e:
+                last_error = e
+        if browser is None:
+            raise RuntimeError(
+                f"Не удалось подключиться к браузеру ({chrome_path}) за 30с. "
+                f"Закройте все окна этого браузера и попробуйте снова. "
+                f"Последняя ошибка: {last_error}"
+            )
+
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
 
@@ -102,7 +109,34 @@ def open_site(p, url):
 
     print(f"Переход по ссылке: {url}")
     page.goto(url, wait_until="domcontentloaded")
+
+    load_full_page(page)
+
     return browser, page
+
+
+def load_full_page(page, step=800, pause=200, max_scrolls=50):
+    """Прокручивает страницу до самого низа и обратно наверх.
+
+    Многие сайты дорендеривают контент (в т.ч. раздел описания) лениво,
+    по мере прокрутки — пока пользователь не долистает страницу, часть
+    DOM просто не существует. Прокручиваем до конца, чтобы всё успело
+    подгрузиться, затем возвращаемся в начало перед первым скриншотом.
+    """
+    print("Прокрутка страницы до конца для подгрузки ленивого контента...")
+    for _ in range(max_scrolls):
+        prev_y = page.evaluate("window.scrollY")
+        page.evaluate(f"window.scrollBy(0, {step})")
+        page.wait_for_timeout(pause)
+        current_y = page.evaluate("window.scrollY")
+        at_bottom = page.evaluate("window.scrollY + window.innerHeight >= document.body.scrollHeight - 2")
+        if at_bottom or current_y == prev_y:
+            break
+    page.wait_for_timeout(400)
+
+    print("Возврат в начало страницы...")
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(400)
 
 
 SERVICE_WORDS = [
@@ -619,7 +653,7 @@ def llm_is_description(text):
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.0}
+            "options": {"temperature": 0.5}
         }, timeout=60)
         resp.raise_for_status()
         answer = resp.json()["response"].strip()
