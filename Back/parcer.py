@@ -35,7 +35,7 @@ def open_site(p, url):
     # Определяем путь к браузеру и папку пользовательских данных в зависимости от ОС
     if os.name == "posix":  # Linux / macOS
         chrome_path = "chromium"  # предполагается, что chromium установлен в PATH
-        user_data_dir = "/tmp/playwright"
+        user_data_dir = f"/tmp/playwright-{os.getpid()}"
     elif os.name == "nt":  # Windows
         possible_paths = [
             # Google Chrome
@@ -60,10 +60,16 @@ def open_site(p, url):
                 break
         if chrome_path is None:
             raise FileNotFoundError("Не найден ни один поддерживаемый браузер (Chrome/Edge/Яндекс). Проверьте пути в possible_paths.")
-        user_data_dir = r"C:\Temp\chrome-debug"
+        # Уникальная папка профиля на каждый запуск: если предыдущий запуск
+        # не закрыл браузер штатно (завис / был убит через диспетчер задач),
+        # в общей папке остаётся файл-блокировка профиля (SingletonLock),
+        # из-за которого новый браузер видит "занятый" профиль и тихо не
+        # открывает отладочный порт — Playwright потом падает с ECONNREFUSED.
+        user_data_dir = os.path.join(r"C:\Temp", f"chrome-debug-{os.getpid()}")
     else:
         raise OSError(f"Unsupported OS: {os.name}")
 
+    print(f"Запуск браузера: {chrome_path}")
     # Запускаем браузер с отладочным портом
     subprocess.Popen([
         chrome_path,
@@ -73,10 +79,21 @@ def open_site(p, url):
     ])
 
     print("Ожидание запуска браузера...")
-    time.sleep(5)
-
-    # Подключаемся к браузеру через CDP
-    browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+    browser = None
+    last_error = None
+    for attempt in range(30):
+        time.sleep(1)
+        try:
+            browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
+            break
+        except Exception as e:
+            last_error = e
+    if browser is None:
+        raise RuntimeError(
+            f"Не удалось подключиться к браузеру ({chrome_path}) за 30с. "
+            f"Закройте все окна этого браузера и попробуйте снова. "
+            f"Последняя ошибка: {last_error}"
+        )
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
 
