@@ -495,48 +495,6 @@ def filter_description_blocks(blocks):
     return scored
 
 
-def ask_llm_to_pick(blocks):
-    """Отправляет пронумерованный список текстовых блоков в LLM для выбора."""
-    # Формируем список для LLM
-    block_list = ""
-    for b in blocks:
-        block_list += f"[{b['index']}] ({b['length']} chars): {b['preview']}\n\n"
-
-    prompt = f"""Here are text blocks from a product page. Pick the one that is the product DESCRIPTION.
-
-DESCRIPTION = long prose text about the product: what it is, how it works, benefits, ingredients.
-Example: "Коллаген – незаменимый для организма компонент, который требует постоянного восполнения..."
-
-NOT description:
-- Characteristics/specs: "Тип: Пищевая добавка", "Вес: 200г"
-- Reviews, prices, navigation, delivery info
-
-Blocks:
-{block_list}
-
-If you found the description, reply with ONLY the number. Example: 5
-If none of these blocks is a description, reply with: NONE"""
-
-    try:
-        resp = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.1}
-        }, timeout=120)
-        resp.raise_for_status()
-        answer = resp.json()["response"].strip()
-        print(f"Ответ LLM: {answer}")
-
-        # Ищем число в ответе
-        match = re.search(r'\d+', answer)
-        if match and "NONE" not in answer.upper():
-            return int(match.group())
-    except Exception as e:
-        print(f"Ошибка при запросе к Ollama: {e}")
-    return None
-
-
 DESCRIPTION_KEYWORDS = [
     "Описание",
     "описание",
@@ -544,7 +502,7 @@ DESCRIPTION_KEYWORDS = [
     "О товаре",
     "Описание товара",
     "Характеристики",
-    "характеристики"
+    "характеристики",
     "Подробное описание",
 ]
 
@@ -552,8 +510,8 @@ EXPAND_KEYWORDS = [
     "Показать полностью",
     "Показать целиком",
     "Все характеристики",
-    "Показать ещё"
-    "Показать еще"
+    "Показать ещё",
+    "Показать еще",
 ]
 
 
@@ -646,61 +604,6 @@ def strip_heading(text, keyword):
     lines = text.split('\n')
     cleaned = [l for l in lines if l.strip().lower() != keyword.lower()]
     return '\n'.join(cleaned).strip()
-
-
-def llm_is_description(text):
-    """Спрашивает LLM: является ли текст описанием товара? Возвращает True/False."""
-    stripped = text.strip()
-    sentence_count = len(re.findall(r'[.!?][\s\n]', stripped)) + (1 if stripped and stripped[-1] in '.!?' else 0)
-
-    # Явно слишком короткий без предложений → не описание
-    if len(stripped) < 80 and sentence_count == 0:
-        print(f"  Эвристика: слишком короткий ({len(stripped)} симв.) → не описание")
-        return False
-
-    # Много предложений → точно описание, LLM не нужна
-    if sentence_count >= 3:
-        print(f"  Эвристика: {sentence_count} предложений → описание")
-        return True
-
-    # Пограничный случай (1–2 предложения) → спрашиваем LLM
-    prompt = f"""Тебе будет передан текст со страницы товара.
-
-Задача: определить, является ли этот текст описанием товара.
-
-Правила принятия решения:
-- Описание товара — связный текст о товаре: что это, как работает, состав, преимущества, польза.
-- НЕ описание: список характеристик (ключ: значение), навигационные ссылки, кнопки, заголовки разделов, отзывы, информация о доставке и оплате.
-
-Примеры:
-Текст: "Коллаген – незаменимый для организма компонент. Он обеспечивает упругость кожи и здоровье суставов."
-Ответ: Да
-
-Текст: "Артикул: 12345. Вес: 200г. Страна производства: Россия."
-Ответ: Нет
-
-Текст: "Доставка. В корзину. Купить сейчас. Перейти."
-Ответ: Нет
-
-Формат ответа: напиши только «Да» или «Нет».
-
-Текст: {stripped[:500]}
-"""
-    try:
-        resp = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.5}
-        }, timeout=60)
-        resp.raise_for_status()
-        answer = resp.json()["response"].strip()
-        is_desc = answer.lower().startswith("да")
-        print(f"  LLM-валидация ({'описание' if is_desc else 'мусор'}): {answer[:200]}")
-        return is_desc
-    except Exception as e:
-        print(f"  Ошибка LLM-валидации: {e}")
-        return False
 
 
 def find_element_by_keyword(page, keyword):
@@ -977,7 +880,11 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
 
 
 def process_modal_info(page):
-    """Ищет описание товара перебором ключевых слов с LLM-валидацией."""
+    """Ищет описание товара перебором ключевых слов.
+
+    Логика: первый матч по ключевому слову, текст которого проходит проверку
+    на связность (is_prose) — это и есть описание. LLM здесь не используется.
+    """
     try:
         clicked_keywords = set()  # не кликать одно и то же дважды
 
@@ -994,13 +901,14 @@ def process_modal_info(page):
             if result["type"] == "heading":
                 # Описание уже видно на странице
                 text = result.get("text", "")
-                text_for_llm = strip_heading(text, keyword)
-                if len(text_for_llm) < 100:
-                    print(f"  Текст слишком короткий ({len(text_for_llm)} символов), пропускаем.")
+                body_text = strip_heading(text, keyword)
+                if len(body_text) < 100:
+                    print(f"  Текст слишком короткий ({len(body_text)} символов), пропускаем.")
                     continue
-                print(f"  Текст: {text_for_llm[:80]}...")
-                if llm_is_description(text_for_llm):
-                    print("  LLM: это описание")
+                is_desc, score = is_prose(body_text)
+                print(f"  Текст (связность score={score:.0f}): {body_text[:80]}...")
+                if is_desc:
+                    print("  Связный текст → это описание")
                     expand_description(page, selector=result["selector"])
                     # Повторно ищем элемент после раскрытия — берём и текст, и координаты
                     # из одного источника, чтобы не использовать хрупкий старый селектор.
@@ -1018,7 +926,7 @@ def process_modal_info(page):
                     screenshot_description_and_specs(page, str(back_dir / "description_section.png"), scroll_y=result.get("scrollY"), end_y=end_y)
                     return
                 else:
-                    print("  LLM: не описание, пробуем дальше.")
+                    print("  Не связный текст (характеристики/мусор), пробуем дальше.")
 
             elif result["type"] == "trigger":
                 if keyword in clicked_keywords:
@@ -1045,14 +953,15 @@ def process_modal_info(page):
                     continue
 
                 text = after["text"]
-                text_for_llm = strip_heading(text, keyword)
-                if len(text_for_llm) < 100:
-                    print(f"  Текст слишком короткий ({len(text_for_llm)} символов), пропускаем.")
+                body_text = strip_heading(text, keyword)
+                if len(body_text) < 100:
+                    print(f"  Текст слишком короткий ({len(body_text)} символов), пропускаем.")
                     continue
 
-                print(f"  Текст после клика: {text_for_llm[:80]}...")
-                if llm_is_description(text_for_llm):
-                    print("  LLM: это описание")
+                is_desc, score = is_prose(body_text)
+                print(f"  Текст после клика (связность score={score:.0f}): {body_text[:80]}...")
+                if is_desc:
+                    print("  Связный текст → это описание")
                     expand_description(page)
                     # Перечитываем текст после раскрытия
                     after_expanded = get_text_after_click(page, keyword)
@@ -1062,12 +971,12 @@ def process_modal_info(page):
                     screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
                     return
                 else:
-                    print("  LLM: не описание, пробуем дальше.")
+                    print("  Не связный текст, пробуем дальше.")
                     # Закрываем модалку если открылась
                     page.keyboard.press("Escape")
                     page.wait_for_timeout(500)
 
-        # Фоллбэк: текстовые блоки + эвристика + LLM
+        # Фоллбэк: текстовые блоки + эвристика связного текста
         print("\n--- Фоллбэк: поиск по текстовым блокам ---")
         blocks = extract_text_blocks(page)
         desc_blocks = filter_description_blocks(blocks)
@@ -1077,22 +986,14 @@ def process_modal_info(page):
             page.screenshot(path="description_section.png", full_page=True)
             return
 
-        if len(desc_blocks) == 1:
-            block = desc_blocks[0]
-        else:
-            for i, b in enumerate(desc_blocks):
-                b["index"] = i
-            chosen = ask_llm_to_pick(desc_blocks)
-            block = desc_blocks[chosen] if chosen is not None and chosen < len(desc_blocks) else desc_blocks[0]
-
+        # desc_blocks уже отфильтрованы is_prose и отсортированы по score —
+        # берём лучший (первый) блок как описание.
+        block = desc_blocks[0]
         text = block["preview"]
-        if llm_is_description(text):
-            with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-                f.write(text)
-            screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
-        else:
-            print("Описание не найдено даже в фоллбэке.")
-            page.screenshot(path="description_section.png", full_page=True)
+        print(f"  Выбран блок score={block.get('score', 0):.0f}: {text[:60]}...")
+        with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
+            f.write(text)
+        screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
 
     except Exception as e:
         print(f"Ошибка при обработке описания: {e}")
