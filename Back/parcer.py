@@ -22,7 +22,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 #from llama_cpp import Llama
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_MODEL = "qwen2.5:1.5b"
 
 #llm = Llama(model_path="./qwen2.5-3b.gguf")
 # --- НАСТРОЙКИ И ПУТИ ---

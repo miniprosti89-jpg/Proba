@@ -73,6 +73,9 @@ if not exist "%~dp0_python\.streamlit\credentials.toml" (
 )
 
 :: Launch the app
+:: launcher.py сам поднимает портативную Ollama (папка Ollama\),
+:: прогревает модель qwen2.5:1.5b и гарантированно останавливает
+:: их при выходе (Ctrl+C, ошибка или обычное закрытие).
 echo.
 echo Starting app...
 echo Open browser at: http://localhost:8501

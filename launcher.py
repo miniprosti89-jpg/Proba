@@ -1,8 +1,99 @@
+import os
 import sys
+import time
 import subprocess
 import threading
 import webbrowser
 from pathlib import Path
+
+import requests
+
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "qwen2.5:1.5b"
+
+
+def get_ollama_exe():
+    """Путь к портативному ollama.exe рядом с проектом, или None, если его нет."""
+    exe = Path(__file__).parent / "Ollama" / "ollama.exe"
+    return exe if exe.exists() else None
+
+
+def wait_for_ollama(timeout=30):
+    """Ждёт, пока Ollama-сервер начнёт отвечать на localhost:11434."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            requests.get(OLLAMA_URL, timeout=2)
+            return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def start_ollama():
+    """Запускает портативную Ollama (Ollama/ollama.exe) с моделями из
+    Ollama_models/models и прогревает OLLAMA_MODEL в память.
+
+    Возвращает Popen запущенного сервера или None, если портативной
+    Ollama нет — в этом случае приложение продолжает работать без LLM
+    (шаги в parcer.py, использующие LLM, рассчитаны на такой фоллбэк).
+    """
+    ollama_exe = get_ollama_exe()
+    if ollama_exe is None:
+        print("Ollama не найдена в папке Ollama/ — пропускаем запуск LLM.")
+        return None
+
+    models_dir = Path(__file__).parent / "Ollama_models" / "models"
+    env = os.environ.copy()
+    env["OLLAMA_MODELS"] = str(models_dir)
+
+    log_path = ollama_exe.parent / "ollama.log"
+    log_file = open(log_path, "w", encoding="utf-8", errors="replace")
+
+    print("Запуск Ollama...")
+    proc = subprocess.Popen(
+        [str(ollama_exe), "serve"],
+        env=env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+    )
+
+    if not wait_for_ollama(timeout=30):
+        print("Предупреждение: Ollama не ответила за 30с, продолжаем без прогрева модели.")
+        return proc
+
+    print(f"Прогрев модели {OLLAMA_MODEL}...")
+    try:
+        # Запрос без "prompt" — Ollama просто загружает модель в память и отвечает,
+        # ничего не генерируя. Модель уже лежит локально в Ollama_models, поэтому
+        # интернет для этого не нужен.
+        requests.post(f"{OLLAMA_URL}/api/generate", json={"model": OLLAMA_MODEL}, timeout=120)
+        print("Модель загружена в память.")
+    except Exception as e:
+        print(f"Не удалось прогреть модель: {e}")
+
+    return proc
+
+
+def stop_ollama(proc):
+    """Выгружает модель из памяти и останавливает Ollama-сервер."""
+    if proc is None:
+        return
+
+    ollama_exe = get_ollama_exe()
+    if ollama_exe is not None:
+        try:
+            subprocess.run([str(ollama_exe), "stop", OLLAMA_MODEL],
+                            timeout=10, capture_output=True)
+        except Exception:
+            pass
+
+    print("Остановка Ollama...")
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def get_python():
@@ -72,6 +163,8 @@ def main():
         input("\nНажмите Enter для выхода...")
         return
 
+    ollama_proc = start_ollama()
+
     try:
         print("Приложение запускается...")
         print("После запуска откройте браузер по адресу http://localhost:8501")
@@ -90,6 +183,8 @@ def main():
     except Exception as e:
         print(f"Ошибка при запуске: {e}")
         input("\nНажмите Enter для выхода...")
+    finally:
+        stop_ollama(ollama_proc)
 
 
 if __name__ == "__main__":
