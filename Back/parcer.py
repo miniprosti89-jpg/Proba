@@ -38,9 +38,19 @@ def open_site(p, url):
         user_data_dir = "/tmp/playwright"
     elif os.name == "nt":  # Windows
         possible_paths = [
+            # Google Chrome
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            # Microsoft Edge (Chromium) — на Windows обычно предустановлен
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            # Яндекс.Браузер (Chromium)
+            os.path.expandvars(r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"),
+            r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe",
+            r"C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe",
+            # Chromium (открытый движок, ставится в профиль пользователя)
+            os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
         ]
         chrome_path = None
         for path in possible_paths:
@@ -48,7 +58,7 @@ def open_site(p, url):
                 chrome_path = path
                 break
         if chrome_path is None:
-            raise FileNotFoundError("Chrome не найден. Проверьте пути в possible_paths.")
+            raise FileNotFoundError("Не найден ни один поддерживаемый браузер (Chrome/Edge/Яндекс). Проверьте пути в possible_paths.")
         user_data_dir = r"C:\Temp\chrome-debug"
     else:
         raise OSError(f"Unsupported OS: {os.name}")
