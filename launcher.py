@@ -16,16 +16,14 @@ def get_python():
 def get_streamlit_cmd(python_exe):
     """Возвращает команду для запуска streamlit.
 
-    Приоритет:
-    1. Scripts/streamlit.exe — стандартный путь после pip install в embedded Python
-    2. _streamlit_runner.py — маленький скрипт с try/except, работает
-       и со старым (< 1.12, streamlit.cli) и с новым (>= 1.12, streamlit.web.cli).
+    Намеренно не используем Scripts/streamlit.exe: это pip-генерируемый
+    launcher-стаб (distlib), который сам вызывает CreateProcess для
+    python.exe с путём, зашитым в заголовок exe в фиксированной кодировке.
+    Если путь к проекту содержит не-ASCII символы (например, кириллицу),
+    стаб падает с "Fatal error in launcher: Unable to create process".
+    Поэтому всегда запускаем через _streamlit_runner.py — python.exe
+    получает путь как обычный аргумент subprocess, без промежуточного стаба.
     """
-    python_path = Path(python_exe)
-    streamlit_exe = python_path.parent / "Scripts" / "streamlit.exe"
-    if streamlit_exe.exists():
-        return [str(streamlit_exe)]
-
     # Создаём вспомогательный скрипт рядом с launcher.py.
     # Он перебирает все известные точки входа streamlit разных версий
     # и в случае провала печатает диагностику.
