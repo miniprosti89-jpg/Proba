@@ -73,8 +73,8 @@ if not exist "%~dp0_python\.streamlit\credentials.toml" (
 )
 
 :: Launch the app
-REM launcher.py сам поднимает портативную Ollama из папки Ollama,
-REM прогревает модель qwen2.5:1.5b и останавливает их при выходе.
+REM launcher.py starts the portable Ollama, warms up qwen2.5:1.5b,
+REM and stops both when the app exits.
 echo.
 echo Starting app...
 echo Open browser at: http://localhost:8501
