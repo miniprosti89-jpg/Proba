@@ -544,6 +544,7 @@ DESCRIPTION_KEYWORDS = [
     "О товаре",
     "Описание товара",
     "Характеристики",
+    "характеристики"
     "Подробное описание",
 ]
 
@@ -551,6 +552,8 @@ EXPAND_KEYWORDS = [
     "Показать полностью",
     "Показать целиком",
     "Все характеристики",
+    "Показать ещё"
+    "Показать еще"
 ]
 
 
@@ -565,14 +568,49 @@ def expand_description(page, selector=None):
         for kw in EXPAND_KEYWORDS:
             try:
                 els = page.get_by_text(kw, exact=True)
-                if els.count() == 0:
+                n = els.count()
+                if n == 0:
                     continue
 
-                el = els.first
+                # Один и тот же текст ("Все характеристики") может встречаться
+                # дважды: как якорная ссылка <a href="#..."> (просто скроллит
+                # к разделу, ничего не раскрывает) и как настоящий раскрыватель
+                # на label[for]/button. .first берёт первый по DOM — часто это
+                # якорь. Поэтому перебираем все совпадения и выбираем тоггл.
+                chosen = None    # индекс настоящего раскрывателя (label/button)
+                fallback = None  # запасной не-якорный кандидат
+                for idx in range(n):
+                    try:
+                        info = els.nth(idx).evaluate("""e => {
+                            const label = e.closest('label[for]');
+                            const btn = e.closest('button');
+                            const anchor = e.closest('a');
+                            const c = label || btn || anchor || e;
+                            const r = c.getBoundingClientRect();
+                            const href = anchor ? (anchor.getAttribute('href') || '').trim() : '';
+                            return {
+                                already: !!e.closest('[data-expand-clicked]'),
+                                visible: r.width > 0 && r.height > 0,
+                                isToggle: !!(label || btn),
+                                isJump: !!anchor && !label && !btn && href.startsWith('#')
+                            };
+                        }""")
+                    except Exception:
+                        continue
 
-                # Пропускаем уже нажатые
-                if el.evaluate("e => !!e.closest('[data-expand-clicked]')"):
+                    if info['already'] or not info['visible'] or info['isJump']:
+                        continue
+                    if info['isToggle']:
+                        chosen = idx
+                        break
+                    if fallback is None:
+                        fallback = idx
+
+                target_idx = chosen if chosen is not None else fallback
+                if target_idx is None:
                     continue
+
+                el = els.nth(target_idx)
 
                 # Прокручиваем элемент в область видимости
                 el.scroll_into_view_if_needed(timeout=2000)
