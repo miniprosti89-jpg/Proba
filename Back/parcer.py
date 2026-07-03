@@ -60,6 +60,20 @@ def ollama_model_available():
     return _ollama_available
 
 
+def _log_ollama_error(prefix, e):
+    """Печатает ошибку запроса к Ollama вместе с телом ответа сервера.
+
+    Текст requests.exceptions.HTTPError сам по себе — это только код и URL
+    ("404 Client Error: Not Found for url: ..."), без причины. Ollama обычно
+    кладёт человекочитаемую причину в тело JSON-ответа (например, что blob
+    модели отсутствует) — без него причину пришлось бы искать в ollama.log.
+    """
+    print(f"{prefix}: {e}")
+    resp = getattr(e, "response", None)
+    if resp is not None:
+        print(f"{prefix} (тело ответа Ollama): {resp.text[:500]}")
+
+
 def open_site(p, url):
     """Запуск браузера и переход на страницу (поддерживает Linux и Windows)."""
     DEBUG_PORT = "9222"
@@ -329,7 +343,7 @@ def llm_pick_product_name(headings):
                 return headings[idx]["text"]
         return None
     except Exception as e:
-        print(f"  Ошибка LLM-выбора названия: {e}")
+        _log_ollama_error("  Ошибка LLM-выбора названия", e)
         return None
 
 
@@ -570,7 +584,7 @@ If none of these blocks is a description, reply with: NONE"""
         if match and "NONE" not in answer.upper():
             return int(match.group())
     except Exception as e:
-        print(f"Ошибка при запросе к Ollama: {e}")
+        _log_ollama_error("Ошибка при запросе к Ollama", e)
     return None
 
 
@@ -739,7 +753,7 @@ def llm_is_description(text):
         print(f"  LLM-валидация ({'описание' if is_desc else 'мусор'}): {answer[:200]}")
         return is_desc
     except Exception as e:
-        print(f"  Ошибка LLM-валидации: {e}")
+        _log_ollama_error("  Ошибка LLM-валидации", e)
         return False
 
 
