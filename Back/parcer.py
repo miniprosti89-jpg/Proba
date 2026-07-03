@@ -21,8 +21,12 @@ if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='cp1251', errors='replace')
 
 #from llama_cpp import Llama
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
+# launcher.py прописывает OLLAMA_BASE_URL в окружение перед запуском Streamlit
+# (parcer.py наследует его как подпроцесс) — актуально, если портативная
+# Ollama поднялась на резервном порту из-за занятого 11434.
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_URL = OLLAMA_BASE_URL + "/api/generate"
+OLLAMA_TAGS_URL = OLLAMA_BASE_URL + "/api/tags"
 OLLAMA_MODEL = "qwen2.5:1.5b"
 
 #llm = Llama(model_path="./qwen2.5-3b.gguf")
