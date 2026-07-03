@@ -22,10 +22,42 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 #from llama_cpp import Llama
 OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 OLLAMA_MODEL = "qwen2.5:1.5b"
 
 #llm = Llama(model_path="./qwen2.5-3b.gguf")
 # --- НАСТРОЙКИ И ПУТИ ---
+
+_ollama_available = None  # None = ещё не проверяли; True/False = результат проверки
+
+
+def ollama_model_available():
+    """Проверяет один раз за запуск, что OLLAMA_MODEL реально загружена в Ollama.
+
+    Без этой проверки каждый из трёх LLM-вызовов в парсере узнавал бы об
+    отсутствии модели только по 404 от /api/generate (например, если модель
+    из parcer.py разошлась с моделью, прогретой в launcher.py, или если
+    портативная Ollama на слабой машине видит только часть моделей через
+    переменную окружения OLLAMA_MODELS). Результат кэшируется на весь запуск.
+    """
+    global _ollama_available
+    if _ollama_available is not None:
+        return _ollama_available
+
+    try:
+        resp = requests.get(OLLAMA_TAGS_URL, timeout=5)
+        resp.raise_for_status()
+        names = {m.get("name", "") for m in resp.json().get("models", [])}
+        _ollama_available = OLLAMA_MODEL in names
+        if not _ollama_available:
+            print(f"  [Ollama] Модель '{OLLAMA_MODEL}' не найдена среди установленных: {sorted(names)}.")
+            print("  [Ollama] LLM-подсказки отключены на этот запуск, используются только эвристики.")
+    except Exception as e:
+        print(f"  [Ollama] Сервер недоступен ({e}).")
+        print("  [Ollama] LLM-подсказки отключены на этот запуск, используются только эвристики.")
+        _ollama_available = False
+
+    return _ollama_available
 
 
 def open_site(p, url):
@@ -256,6 +288,8 @@ def llm_pick_product_name(headings):
     """Отправляет все заголовки в LLM и просит выбрать название товара.
     Возвращает текст выбранного заголовка или None."""
     if not headings:
+        return None
+    if not ollama_model_available():
         return None
 
     items = ""
@@ -497,6 +531,9 @@ def filter_description_blocks(blocks):
 
 def ask_llm_to_pick(blocks):
     """Отправляет пронумерованный список текстовых блоков в LLM для выбора."""
+    if not ollama_model_available():
+        return None
+
     # Формируем список для LLM
     block_list = ""
     for b in blocks:
@@ -664,6 +701,9 @@ def llm_is_description(text):
         return True
 
     # Пограничный случай (1–2 предложения) → спрашиваем LLM
+    if not ollama_model_available():
+        return False
+
     prompt = f"""Тебе будет передан текст со страницы товара.
 
 Задача: определить, является ли этот текст описанием товара.
