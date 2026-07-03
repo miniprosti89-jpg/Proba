@@ -28,6 +28,12 @@ OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_URL = OLLAMA_BASE_URL + "/api/generate"
 OLLAMA_TAGS_URL = OLLAMA_BASE_URL + "/api/tags"
 OLLAMA_MODEL = "qwen2.5:1.5b"
+# На слабом железе (тестовые машины без GPU) генерация может занимать дольше
+# 60с — держим запас. keep_alive не даёт Ollama выгружать модель из памяти
+# между вызовами (дефолт — 5 минут простоя), иначе следующий запрос ждёт
+# ещё и повторную загрузку модели с диска поверх генерации.
+OLLAMA_TIMEOUT = 180
+OLLAMA_KEEP_ALIVE = "30m"
 
 #llm = Llama(model_path="./qwen2.5-3b.gguf")
 # --- НАСТРОЙКИ И ПУТИ ---
@@ -332,8 +338,9 @@ def llm_pick_product_name(headings):
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {"temperature": 0.0}
-        }, timeout=60)
+        }, timeout=OLLAMA_TIMEOUT)
         resp.raise_for_status()
         answer = resp.json()["response"].strip()
         print(f"  LLM выбрал: {answer[:200]}")
@@ -577,8 +584,9 @@ If none of these blocks is a description, reply with: NONE"""
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {"temperature": 0.1}
-        }, timeout=120)
+        }, timeout=OLLAMA_TIMEOUT)
         resp.raise_for_status()
         answer = resp.json()["response"].strip()
         print(f"Ответ LLM: {answer}")
@@ -749,8 +757,9 @@ def llm_is_description(text):
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
             "options": {"temperature": 0.5}
-        }, timeout=60)
+        }, timeout=OLLAMA_TIMEOUT)
         resp.raise_for_status()
         answer = resp.json()["response"].strip()
         is_desc = answer.lower().startswith("да")

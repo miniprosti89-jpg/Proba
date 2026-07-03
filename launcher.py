@@ -99,7 +99,10 @@ def start_ollama():
         # Запрос без "prompt" — Ollama просто загружает модель в память и отвечает,
         # ничего не генерируя. Модель уже лежит локально в Ollama_models, поэтому
         # интернет для этого не нужен.
-        requests.post(f"{base_url}/api/generate", json={"model": OLLAMA_MODEL}, timeout=120)
+        # keep_alive: "30m" — держит модель в памяти дольше дефолтных 5 минут
+        # простоя, синхронизировано с OLLAMA_KEEP_ALIVE в Back/parcer.py.
+        requests.post(f"{base_url}/api/generate",
+                      json={"model": OLLAMA_MODEL, "keep_alive": "30m"}, timeout=120)
         print("Модель загружена в память.")
     except Exception as e:
         print(f"Не удалось прогреть модель: {e}")
