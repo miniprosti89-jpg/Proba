@@ -387,428 +387,6 @@ def make_main_screenshot(page, path=None):
     print(f"Скриншот сохранён: {path}")
 
 
-def extract_text_blocks(page):
-    """Извлекает текстовые блоки со страницы с их CSS-путями."""
-    return page.evaluate("""() => {
-        const blocks = [];
-        const seen = new Set();
-
-        function getCssPath(el) {
-            const parts = [];
-            while (el && el.nodeType === 1) {
-                let selector = el.tagName.toLowerCase();
-                if (el.id) {
-                    selector += '#' + el.id;
-                    parts.unshift(selector);
-                    break;
-                }
-                if (el.className && typeof el.className === 'string') {
-                    const cls = el.className.trim().split(/\\s+/).filter(c => c.length > 0 && !c.match(/^\\d/));
-                    if (cls.length > 0) selector += '.' + cls[0];
-                }
-                const parent = el.parentElement;
-                if (parent) {
-                    const siblings = [...parent.children].filter(c => c.tagName === el.tagName);
-                    if (siblings.length > 1) {
-                        const idx = siblings.indexOf(el) + 1;
-                        selector += ':nth-of-type(' + idx + ')';
-                    }
-                }
-                parts.unshift(selector);
-                el = parent;
-            }
-            return parts.join(' > ');
-        }
-
-        // Ищем элементы с текстом
-        const candidates = document.querySelectorAll('p, div, span, section, article, td, li');
-        for (const el of candidates) {
-            // Пропускаем элементы с большим количеством дочерних элементов (контейнеры)
-            if (el.children.length > 1) continue;
-
-            const text = el.innerText?.trim();
-            if (!text || text.length < 30) continue;
-            if (seen.has(text)) continue;
-            seen.add(text);
-
-            // Обрезаем превью до 200 символов
-            const preview = text.substring(0, 200);
-            const cssPath = getCssPath(el);
-
-            blocks.push({
-                index: blocks.length,
-                preview: preview,
-                selector: cssPath,
-                length: text.length
-            });
-
-            if (blocks.length >= 50) break;
-        }
-        return blocks;
-    }""")
-
-
-def is_prose(text):
-    """Определяет, является ли текст связным описанием (а не характеристиками)."""
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    if not lines:
-        return False, 0
-
-    # Считаем предложения (точки, восклицательные, вопросительные знаки)
-    sentence_count = len(re.findall(r'[.!?]\s', text)) + (1 if text.rstrip()[-1:] in '.!?' else 0)
-
-    # Средняя длина строки
-    avg_line_len = sum(len(l) for l in lines) / len(lines)
-
-    # Доля коротких строк (< 40 символов) — у характеристик много коротких строк
-    short_lines = sum(1 for l in lines if len(l) < 40)
-    short_ratio = short_lines / len(lines)
-
-    # Доля строк с двоеточиями (ключ: значение) — типично для характеристик
-    colon_lines = sum(1 for l in lines if ':' in l and len(l) < 80)
-    colon_ratio = colon_lines / len(lines) if lines else 0
-
-    # Оценка: чем выше — тем больше похоже на описание
-    score = 0
-    score += min(sentence_count * 10, 40)    # много предложений = описание
-    score += min(avg_line_len / 2, 30)       # длинные строки = описание
-    score -= short_ratio * 30                # много коротких строк = характеристики
-    score -= colon_ratio * 30                # много двоеточий = характеристики
-
-    return score > 20, score
-
-
-def filter_description_blocks(blocks):
-    """Фильтрует блоки, оставляя только те, что похожи на описание."""
-    scored = []
-    for b in blocks:
-        is_desc, score = is_prose(b["preview"])
-        if is_desc:
-            b["score"] = score
-            scored.append(b)
-            print(f"  Блок [{b['index']}] score={score:.0f}: {b['preview'][:60]}...")
-        else:
-            print(f"  Блок [{b['index']}] отброшен (score={score:.0f}): {b['preview'][:60]}...")
-
-    # Сортируем по score (лучшие первыми)
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored
-
-
-DESCRIPTION_KEYWORDS = [
-    "Описание",
-    "описание",
-    "Характеристики и описание",
-    "О товаре",
-    "Описание товара",
-    "Характеристики",
-    "характеристики",
-    "Подробное описание",
-]
-
-EXPAND_KEYWORDS = [
-    "Показать полностью",
-    "Показать целиком",
-    "Все характеристики",
-    "Показать ещё",
-    "Показать еще",
-]
-
-
-def expand_description(page, selector=None):
-    """Кликает кнопки 'Показать полностью' и подобные пока они есть.
-
-    Использует page.mouse.click(x, y) — настоящий физический клик мышью,
-    который работает на React/Vue и любых JS-фреймворках в отличие от JS el.click().
-    """
-    for i in range(10):
-        found = False
-        for kw in EXPAND_KEYWORDS:
-            try:
-                els = page.get_by_text(kw, exact=True)
-                n = els.count()
-                if n == 0:
-                    continue
-
-                # Один и тот же текст ("Все характеристики") может встречаться
-                # дважды: как якорная ссылка <a href="#..."> (просто скроллит
-                # к разделу, ничего не раскрывает) и как настоящий раскрыватель
-                # на label[for]/button. .first берёт первый по DOM — часто это
-                # якорь. Поэтому перебираем все совпадения и выбираем тоггл.
-                chosen = None    # индекс настоящего раскрывателя (label/button)
-                fallback = None  # запасной не-якорный кандидат
-                for idx in range(n):
-                    try:
-                        info = els.nth(idx).evaluate("""e => {
-                            const label = e.closest('label[for]');
-                            const btn = e.closest('button');
-                            const anchor = e.closest('a');
-                            const c = label || btn || anchor || e;
-                            const r = c.getBoundingClientRect();
-                            const href = anchor ? (anchor.getAttribute('href') || '').trim() : '';
-                            return {
-                                already: !!e.closest('[data-expand-clicked]'),
-                                visible: r.width > 0 && r.height > 0,
-                                isToggle: !!(label || btn),
-                                isJump: !!anchor && !label && !btn && href.startsWith('#')
-                            };
-                        }""")
-                    except Exception:
-                        continue
-
-                    if info['already'] or not info['visible'] or info['isJump']:
-                        continue
-                    if info['isToggle']:
-                        chosen = idx
-                        break
-                    if fallback is None:
-                        fallback = idx
-
-                target_idx = chosen if chosen is not None else fallback
-                if target_idx is None:
-                    continue
-
-                el = els.nth(target_idx)
-
-                # Прокручиваем элемент в область видимости
-                el.scroll_into_view_if_needed(timeout=2000)
-                page.wait_for_timeout(200)
-
-                # Берём координаты центра кликабельного предка (label[for] или button/a)
-                # и помечаем его как нажатый
-                box = el.evaluate("""e => {
-                    const c = e.closest('label[for]') || e.closest('button, a') || e;
-                    c.setAttribute('data-expand-clicked', '1');
-                    const r = c.getBoundingClientRect();
-                    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-                }""")
-
-                # Физический клик мышью — работает на любом фреймворке
-                page.mouse.click(box['x'], box['y'])
-                found = True
-                break
-
-            except Exception as e:
-                print(f"  Ошибка клика '{kw}': {e}")
-                continue
-
-        if not found:
-            print(f"  Кнопок 'Показать полностью' больше нет (итераций: {i}).")
-            break
-        print(f"  Кнопка раскрытия нажата (итерация {i + 1}).")
-        page.wait_for_timeout(600)
-
-
-def strip_heading(text, keyword):
-    """Убирает строку с ключевым словом из начала текста."""
-    lines = text.split('\n')
-    cleaned = [l for l in lines if l.strip().lower() != keyword.lower()]
-    return '\n'.join(cleaned).strip()
-
-
-def find_element_by_keyword(page, keyword):
-    """Ищет элемент с ключевым словом на странице.
-    Возвращает dict: {type: 'heading'|'trigger', selector: str, text: str} или None."""
-    return page.evaluate("""(keyword) => {
-        function buildSelector(el) {
-            if (el.id) return '#' + el.id;
-            if (el.className && typeof el.className === 'string') {
-                const classes = el.className.trim().split(/\\s+/).filter(c => c.length > 0 && !c.match(/^\\d/));
-                const tag = el.tagName.toLowerCase();
-                const parent = el.parentElement;
-                if (parent) {
-                    const idx = [...parent.children].indexOf(el) + 1;
-                    // Используем все классы + nth-child для уникальности
-                    const clsSel = classes.length > 0 ? '.' + classes.join('.') : '';
-                    return tag + clsSel + ':nth-child(' + idx + ')';
-                }
-                if (classes.length > 0) return tag + '.' + classes.join('.');
-            }
-            const parent = el.parentElement;
-            if (parent) {
-                const idx = [...parent.children].indexOf(el) + 1;
-                return el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
-            }
-            return el.tagName.toLowerCase();
-        }
-
-        function isProse(text) {
-            // Проверяем: есть ли в тексте хотя бы 2 предложения (точки с пробелом/концом)
-            const sentences = (text.match(/[.!?]\\s/g) || []).length;
-            if (sentences < 1) return false;
-            // Не характеристики: нет частых "ключ\\nзначение" паттернов
-            const lines = text.split('\\n').filter(l => l.trim());
-            const shortLines = lines.filter(l => l.trim().length < 40).length;
-            return shortLines / lines.length < 0.6;
-        }
-
-        function findProseChild(container) {
-            // Ищем внутри контейнера первый элемент с прозаическим текстом
-            const candidates = container.querySelectorAll('div, p, section, article');
-            for (const ch of candidates) {
-                const text = (ch.innerText || '').trim();
-                if (text.length < 100) continue;
-                if (isProse(text)) {
-                    // Проверяем что это не весь контейнер (нужен более узкий элемент)
-                    if (ch === container) continue;
-                    return ch;
-                }
-            }
-            return null;
-        }
-
-        const kw = keyword.toLowerCase();
-        const all = document.querySelectorAll('*');
-
-        // Проход 1: ищем заголовки (heading) — безопасно, текст уже на странице
-        for (const el of all) {
-            if (el.children.length > 3) continue;
-            const t = (el.innerText || '').trim();
-            if (!t) continue;
-            if (!el.offsetParent) continue;
-
-            const tag = el.tagName.toLowerCase();
-            const tLower = t.toLowerCase();
-
-            // Для заголовков: точное совпадение или начало текста
-            if (['h1','h2','h3','h4','h5'].includes(tag)) {
-                const exactMatch = tLower === kw;
-                const startsWithKeyword = tLower.startsWith(kw);
-                
-                if (!exactMatch && !startsWithKeyword) continue;
-
-                // Ищем контейнер с текстом > 200 символов
-                let container = el.parentElement;
-                for (let i = 0; i < 6; i++) {
-                    if (!container) break;
-                    if ((container.innerText || '').length > 200) break;
-                    container = container.parentElement;
-                }
-                if (!container) continue;
-
-                // Ищем внутри контейнера первый блок с прозой (не весь контейнер)
-                const proseEl = findProseChild(container);
-                const target = proseEl || container;
-                const rect = target.getBoundingClientRect();
-                return {
-                    type: 'heading',
-                    selector: buildSelector(target),
-                    scrollY:    Math.round(rect.top    + window.scrollY),
-                    endScrollY: Math.round(rect.bottom + window.scrollY),
-                    text: (target.innerText || '').trim()
-                };
-            }
-        }
-
-        // Проход 2: ищем триггеры (кнопки/ссылки) — только если заголовок не найден
-        for (const el of all) {
-            if (el.children.length > 3) continue;
-            const t = (el.innerText || '').trim();
-            if (!t) continue;
-            if (!el.offsetParent) continue;
-
-            const tag = el.tagName.toLowerCase();
-            const cursor = getComputedStyle(el).cursor;
-            const role = (el.getAttribute('role') || '').toLowerCase();
-            const tLower = t.toLowerCase();
-            const keywordInText = tLower.includes(kw);
-            const textIsShort = t.length <= 150;
-
-            if (['button', 'a', 'summary'].includes(tag) || cursor === 'pointer' || ['button','tab','link'].includes(role)) {
-                if (keywordInText && textIsShort) {
-                    return { type: 'trigger', selector: buildSelector(el), text: t };
-                }
-            }
-        }
-
-        return null;
-    }""", keyword)
-
-
-def get_text_after_click(page, keyword="Описание"):
-    """После клика ищет текст описания на странице.
-
-    Стратегии (по порядку):
-    1. Заголовок h1-h5 с текстом == keyword → берём sibling или родителя
-    2. Любой заголовок h1-h5 с keyword в тексте (частичное совпадение)
-    3. Фоллбэк: самый большой видимый прозаический блок на странице
-    """
-    desc = page.evaluate("""(kw) => {
-        function isVisible(el) {
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight * 3;
-        }
-
-        function isProse(text) {
-            const sentences = (text.match(/[.!?][\\s\\n]/g) || []).length;
-            if (sentences < 1) return false;
-            const lines = text.split('\\n').filter(l => l.trim());
-            const shortLines = lines.filter(l => l.trim().length < 40).length;
-            return shortLines / lines.length < 0.6;
-        }
-
-        function textFromHeading(h) {
-            // Ищем следующий sibling с достаточным текстом
-            let sibling = h.nextElementSibling;
-            while (sibling) {
-                const t = (sibling.innerText || '').trim();
-                if (t.length > 100) {
-                    h.scrollIntoView({behavior: 'instant', block: 'start'});
-                    return t;
-                }
-                sibling = sibling.nextElementSibling;
-            }
-            // Фоллбэк — родитель
-            const section = h.parentElement;
-            if (section) {
-                const t = (section.innerText || '').trim();
-                if (t.length > 100) {
-                    h.scrollIntoView({behavior: 'instant', block: 'start'});
-                    return t;
-                }
-            }
-            return null;
-        }
-
-        const kwLower = kw.toLowerCase();
-
-        // Проход 1: точное совпадение заголовка
-        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-            const t = (h.innerText || '').trim();
-            if (t.toLowerCase() !== kwLower) continue;
-            if (!isVisible(h)) continue;
-            const text = textFromHeading(h);
-            if (text) return { text };
-        }
-
-        // Проход 2: частичное совпадение заголовка
-        for (const h of document.querySelectorAll('h1,h2,h3,h4,h5')) {
-            const t = (h.innerText || '').trim().toLowerCase();
-            if (!t.includes(kwLower)) continue;
-            if (!isVisible(h)) continue;
-            const text = textFromHeading(h);
-            if (text) return { text };
-        }
-
-        // Проход 3: самый большой видимый прозаический блок
-        let bestEl = null, bestLen = 0;
-        for (const el of document.querySelectorAll('p, div, section, article')) {
-            if (el.children.length > 5) continue;
-            if (!isVisible(el)) continue;
-            const t = (el.innerText || '').trim();
-            if (t.length < 150) continue;
-            if (!isProse(t)) continue;
-            if (t.length > bestLen) { bestLen = t.length; bestEl = el; }
-        }
-        if (bestEl) return { text: (bestEl.innerText || '').trim() };
-
-        return null;
-    }""", keyword)
-
-    if desc and desc.get("text"):
-        return desc
-    return None
-
 
 def screenshot_description_and_specs(page, path="description_section.png", selector=None, scroll_y=None, end_y=None):
     """Серия скриншотов с датой/временем, покрывающая раздел описания и характеристик.
@@ -879,124 +457,112 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
     return True
 
 
-def process_modal_info(page):
-    """Ищет описание товара перебором ключевых слов.
+PICK_OVERLAY_JS = r"""
+() => {
+    const MARK = 'data-pd-overlay';
 
-    Логика: первый матч по ключевому слову, текст которого проходит проверку
-    на связность (is_prose) — это и есть описание. LLM здесь не используется.
+    const panel = document.createElement('div');
+    panel.setAttribute(MARK, '1');
+    panel.style.cssText = `
+        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+        background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
+        font: 14px/1.4 sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4);
+        max-width: 320px;
+    `;
+    panel.innerHTML = `
+        <div style="margin-bottom:8px;">Раскройте описание на странице (вкладки, "Показать полностью"), затем включите выбор и кликните на блок с описанием.</div>
+        <button id="__pd_toggle" style="margin-right:6px;padding:6px 10px;cursor:pointer;">Выбрать блок описания</button>
+        <button id="__pd_confirm" disabled style="padding:6px 10px;cursor:pointer;">Подтвердить</button>
+    `;
+    document.body.appendChild(panel);
+
+    const toggleBtn = panel.querySelector('#__pd_toggle');
+    const confirmBtn = panel.querySelector('#__pd_confirm');
+
+    let pickMode = false;
+    let hoverEl = null;
+    let pickedEl = null;
+
+    function isOverlay(el) {
+        return !!(el && el.closest && el.closest(`[${MARK}]`));
+    }
+
+    function setOutline(el, color) {
+        if (!el) return;
+        el.style.outline = color ? `3px solid ${color}` : '';
+        el.style.outlineOffset = color ? '-3px' : '';
+    }
+
+    function setPickMode(on) {
+        pickMode = on;
+        document.body.style.cursor = on ? 'crosshair' : '';
+        toggleBtn.textContent = on ? 'Режим выбора включён (клик по блоку)' : 'Выбрать блок описания';
+        toggleBtn.style.background = on ? '#c62828' : '';
+    }
+
+    toggleBtn.addEventListener('click', () => setPickMode(!pickMode));
+
+    document.addEventListener('mouseover', (e) => {
+        if (!pickMode || isOverlay(e.target)) return;
+        if (hoverEl && hoverEl !== pickedEl) setOutline(hoverEl, null);
+        hoverEl = e.target;
+        if (hoverEl !== pickedEl) setOutline(hoverEl, 'orange');
+    }, true);
+
+    document.addEventListener('click', (e) => {
+        if (!pickMode || isOverlay(e.target)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (pickedEl && pickedEl !== e.target) setOutline(pickedEl, null);
+        pickedEl = e.target;
+        setOutline(pickedEl, 'red');
+        confirmBtn.disabled = false;
+    }, true);
+
+    confirmBtn.addEventListener('click', () => {
+        if (!pickedEl) return;
+        const rect = pickedEl.getBoundingClientRect();
+        window.__pdResult = {
+            text: (pickedEl.innerText || '').trim(),
+            scrollY: Math.round(rect.top + window.scrollY),
+            endScrollY: Math.round(rect.bottom + window.scrollY),
+        };
+        window.__pdConfirmed = true;
+    });
+}
+"""
+
+PICK_CLEANUP_JS = r"""
+() => {
+    document.querySelectorAll('[data-pd-overlay]').forEach(el => el.remove());
+    document.body.style.cursor = '';
+}
+"""
+
+
+def pick_description_manually(page):
+    """Человек кликает в открытом браузере на блок с описанием товара.
+
+    Клик только подсвечивает кандидата; описание фиксируется отдельной
+    кнопкой "Подтвердить" в оверлее, чтобы случайный клик не сработал как выбор.
+    До включения режима выбора обычные клики по странице (вкладки, "Показать
+    полностью") проходят как есть — человек может сначала раскрыть текст.
     """
-    try:
-        clicked_keywords = set()  # не кликать одно и то же дважды
+    print("\n--- Ожидание ручного выбора блока описания в браузере ---")
+    page.evaluate(PICK_OVERLAY_JS)
+    page.wait_for_function("window.__pdConfirmed === true", timeout=0)
+    result = page.evaluate("window.__pdResult")
+    page.evaluate(PICK_CLEANUP_JS)
 
-        for keyword in DESCRIPTION_KEYWORDS:
-            print(f"\n--- Пробуем ключевое слово: '{keyword}' ---")
+    text = result["text"]
+    print(f"  Выбрано человеком: {text[:80]}...")
+    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
+        f.write(text)
 
-            result = find_element_by_keyword(page, keyword)
-            if not result:
-                print(f"  Элемент '{keyword}' не найден на странице.")
-                continue
-
-            print(f"  Найден элемент типа '{result['type']}'")
-
-            if result["type"] == "heading":
-                # Описание уже видно на странице
-                text = result.get("text", "")
-                body_text = strip_heading(text, keyword)
-                if len(body_text) < 100:
-                    print(f"  Текст слишком короткий ({len(body_text)} символов), пропускаем.")
-                    continue
-                is_desc, score = is_prose(body_text)
-                print(f"  Текст (связность score={score:.0f}): {body_text[:80]}...")
-                if is_desc:
-                    print("  Связный текст → это описание")
-                    expand_description(page, selector=result["selector"])
-                    # Повторно ищем элемент после раскрытия — берём и текст, и координаты
-                    # из одного источника, чтобы не использовать хрупкий старый селектор.
-                    page.wait_for_timeout(600)
-                    fresh = find_element_by_keyword(page, keyword)
-                    if fresh:
-                        expanded_text = fresh.get("text") or text
-                        end_y = fresh.get("endScrollY") or result.get("endScrollY")
-                    else:
-                        expanded_text = text
-                        end_y = result.get("endScrollY")
-                    print(f"  end_y после раскрытия: {end_y}")
-                    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-                        f.write(expanded_text)
-                    screenshot_description_and_specs(page, str(back_dir / "description_section.png"), scroll_y=result.get("scrollY"), end_y=end_y)
-                    return
-                else:
-                    print("  Не связный текст (характеристики/мусор), пробуем дальше.")
-
-            elif result["type"] == "trigger":
-                if keyword in clicked_keywords:
-                    continue
-                clicked_keywords.add(keyword)
-
-                print(f"  Кликаем триггер...")
-                el = page.locator(result["selector"]).first
-                if el.count() == 0:
-                    print("  Триггер не найден в DOM.")
-                    continue
-                try:
-                    el.scroll_into_view_if_needed(timeout=3000)
-                    page.wait_for_timeout(500)
-                    el.click(force=True, timeout=5000)
-                except Exception as click_err:
-                    print(f"  Ошибка клика: {click_err}")
-                    continue
-                page.wait_for_timeout(2000)
-
-                after = get_text_after_click(page, keyword)
-                if not after or not after.get("text"):
-                    print("  После клика текст не найден.")
-                    continue
-
-                text = after["text"]
-                body_text = strip_heading(text, keyword)
-                if len(body_text) < 100:
-                    print(f"  Текст слишком короткий ({len(body_text)} символов), пропускаем.")
-                    continue
-
-                is_desc, score = is_prose(body_text)
-                print(f"  Текст после клика (связность score={score:.0f}): {body_text[:80]}...")
-                if is_desc:
-                    print("  Связный текст → это описание")
-                    expand_description(page)
-                    # Перечитываем текст после раскрытия
-                    after_expanded = get_text_after_click(page, keyword)
-                    expanded_text = after_expanded.get("text") if after_expanded else None
-                    with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-                        f.write(expanded_text or text)
-                    screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
-                    return
-                else:
-                    print("  Не связный текст, пробуем дальше.")
-                    # Закрываем модалку если открылась
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(500)
-
-        # Фоллбэк: текстовые блоки + эвристика связного текста
-        print("\n--- Фоллбэк: поиск по текстовым блокам ---")
-        blocks = extract_text_blocks(page)
-        desc_blocks = filter_description_blocks(blocks)
-
-        if not desc_blocks:
-            print("Описание не найдено.")
-            page.screenshot(path="description_section.png", full_page=True)
-            return
-
-        # desc_blocks уже отфильтрованы is_prose и отсортированы по score —
-        # берём лучший (первый) блок как описание.
-        block = desc_blocks[0]
-        text = block["preview"]
-        print(f"  Выбран блок score={block.get('score', 0):.0f}: {text[:60]}...")
-        with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-            f.write(text)
-        screenshot_description_and_specs(page, str(back_dir / "description_section.png"))
-
-    except Exception as e:
-        print(f"Ошибка при обработке описания: {e}")
+    screenshot_description_and_specs(
+        page, str(back_dir / "description_section.png"),
+        scroll_y=result.get("scrollY"), end_y=result.get("endScrollY")
+    )
 
 
 # --- ЗАПУСК ---
@@ -1011,8 +577,8 @@ if __name__ == "__main__":
         save_product_info(page)
         make_main_screenshot(page)
 
-        # Выполняем вторую часть (модальное окно)
-        process_modal_info(page)
+        # Выполняем вторую часть — ручной выбор блока описания человеком
+        pick_description_manually(page)
     """
         current_dir = os.path.dirname(os.path.abspath(__file__))
         compiler_path = os.path.join(current_dir, 'compiler.py')
