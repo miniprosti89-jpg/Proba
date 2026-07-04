@@ -3,13 +3,57 @@ import sys
 import time
 import subprocess
 import threading
-import webbrowser
 from pathlib import Path
 
 import requests
+from playwright.sync_api import sync_playwright
+
+sys.path.insert(0, str(Path(__file__).parent / "Back"))
+import browser_launch
 
 OLLAMA_URL = "http://localhost:11434"
 OLLAMA_MODEL = "qwen2.5:1.5b"
+
+STREAMLIT_URL = "http://localhost:8501"
+
+
+def wait_for_streamlit(timeout=30):
+    """Ждёт, пока Streamlit-сервер начнёт отвечать на STREAMLIT_URL."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            requests.get(STREAMLIT_URL, timeout=2)
+            return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def open_streamlit_tab():
+    """Открывает Streamlit-интерфейс в том же отладочном браузере, что и
+    parcer.py — чтобы страницы товаров позже открывались вкладками в этом
+    же окне, а не в отдельном браузере/профиле.
+    """
+    was_already_running = browser_launch.is_debug_browser_running()
+
+    if not browser_launch.ensure_debug_browser_running(initial_url=STREAMLIT_URL):
+        print(f"Не удалось запустить браузер — откройте вручную: {STREAMLIT_URL}")
+        return
+
+    if not was_already_running:
+        # Браузер запускался только что с initial_url в аргументах — Streamlit
+        # уже открыт первой вкладкой, дополнительных действий не нужно.
+        return
+
+    # Браузер уже был запущен (например, из прошлой сессии) — initial_url
+    # в этом случае игнорируется, открываем вкладку явно через Playwright.
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(f"http://localhost:{browser_launch.DEBUG_PORT}")
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            context.new_page().goto(STREAMLIT_URL)
+    except Exception as e:
+        print(f"Не удалось открыть вкладку в браузере: {e}")
 
 
 def get_ollama_exe():
@@ -167,7 +211,7 @@ def main():
 
     try:
         print("Приложение запускается...")
-        print("После запуска откройте браузер по адресу http://localhost:8501")
+        print(f"После запуска откройте браузер по адресу {STREAMLIT_URL}")
         print("Для остановки нажмите Ctrl+C")
         print("=" * 50)
 
@@ -175,8 +219,14 @@ def main():
         proc = subprocess.Popen([*streamlit_cmd, "run", str(web_path),
                                   "--server.headless=true",
                                   "--browser.gatherUsageStats=false"])
-        # Открываем браузер через 3 секунды — после старта сервера
-        threading.Timer(1.0, lambda: webbrowser.open("http://localhost:8501")).start()
+
+        def wait_and_open():
+            if wait_for_streamlit():
+                open_streamlit_tab()
+            else:
+                print(f"Streamlit не ответил за отведённое время — откройте вручную: {STREAMLIT_URL}")
+
+        threading.Thread(target=wait_and_open, daemon=True).start()
         proc.wait()
     except KeyboardInterrupt:
         print("\nПриложение остановлено пользователем")

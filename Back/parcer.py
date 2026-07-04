@@ -1,14 +1,13 @@
-import subprocess
 import time
-import os
 import re
 import sys
-import textwrap
 from io import BytesIO
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
+
+import browser_launch
 
 back_dir = Path(__file__).parent
 
@@ -23,77 +22,20 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 
 def open_site(p, url):
-    """Запуск браузера и переход на страницу (поддерживает Linux и Windows)."""
-    DEBUG_PORT = "9222"
+    """Запуск браузера и переход на страницу (поддерживает Linux и Windows).
 
-    # Если браузер с прошлого запуска ещё жив (отладочный порт уже отвечает) —
-    # переиспользуем его и просто открываем новую вкладку, вместо того чтобы
-    # плодить новые окна и терять куки/сессию сайта.
-    try:
-        browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}", timeout=2000)
-        print("Найден уже запущенный браузер — открываем новую вкладку.")
-    except Exception:
-        browser = None
+    Использует тот же отладочный порт/профиль, что и launcher.py (см.
+    browser_launch.py) — благодаря этому страница товара открывается новой
+    вкладкой в том же окне браузера, где уже открыт Streamlit-интерфейс,
+    а не в отдельном, никак не связанном с ним окне.
+    """
+    if not browser_launch.ensure_debug_browser_running(wait_timeout=30):
+        raise RuntimeError(
+            "Не удалось запустить/подключиться к браузеру за 30с. "
+            "Закройте все окна этого браузера и попробуйте снова."
+        )
 
-    if browser is None:
-        # Определяем путь к браузеру и папку пользовательских данных в зависимости от ОС
-        if os.name == "posix":  # Linux / macOS
-            chrome_path = "chromium"  # предполагается, что chromium установлен в PATH
-            user_data_dir = "/tmp/playwright-profile"
-        elif os.name == "nt":  # Windows
-            possible_paths = [
-                # Google Chrome
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-                os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-                os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
-                # Microsoft Edge (Chromium) — на Windows обычно предустановлен
-                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-                # Яндекс.Браузер (Chromium)
-                os.path.expandvars(r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"),
-                r"C:\Program Files\Yandex\YandexBrowser\Application\browser.exe",
-                r"C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe",
-                # Chromium (открытый движок, ставится в профиль пользователя)
-                os.path.expandvars(r"%LOCALAPPDATA%\Chromium\Application\chrome.exe"),
-            ]
-            chrome_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    chrome_path = path
-                    break
-            if chrome_path is None:
-                raise FileNotFoundError("Не найден ни один поддерживаемый браузер (Chrome/Edge/Яндекс). Проверьте пути в possible_paths.")
-            # Один и тот же профиль на все запуски — сохраняет куки и сессию
-            # сайта между запусками (иначе каждый заход выглядит первым).
-            user_data_dir = r"C:\Temp\chrome-debug"
-        else:
-            raise OSError(f"Unsupported OS: {os.name}")
-
-        print(f"Запуск браузера: {chrome_path}")
-        # Запускаем браузер с отладочным портом
-        subprocess.Popen([
-            chrome_path,
-            f"--remote-debugging-port={DEBUG_PORT}",
-            f"--user-data-dir={user_data_dir}",
-            "--start-maximized"
-        ])
-
-        print("Ожидание запуска браузера...")
-        last_error = None
-        for attempt in range(30):
-            time.sleep(1)
-            try:
-                browser = p.chromium.connect_over_cdp(f"http://localhost:{DEBUG_PORT}")
-                break
-            except Exception as e:
-                last_error = e
-        if browser is None:
-            raise RuntimeError(
-                f"Не удалось подключиться к браузеру ({chrome_path}) за 30с. "
-                f"Закройте все окна этого браузера и попробуйте снова. "
-                f"Последняя ошибка: {last_error}"
-            )
+    browser = p.chromium.connect_over_cdp(f"http://localhost:{browser_launch.DEBUG_PORT}")
 
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
@@ -422,9 +364,3 @@ if __name__ == "__main__":
 
         # Выполняем вторую часть — ручной выбор блока описания человеком
         pick_description_manually(page)
-    """
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        compiler_path = os.path.join(current_dir, 'compiler.py')
-        comp_res = subprocess.run(['python', compiler_path], capture_output=True, text=True)
-        print(comp_res.stdout)
-    """
