@@ -413,14 +413,6 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
             # Достигли нижней границы блока?
             current_bottom = page.evaluate("window.scrollY + window.innerHeight")
             if end_y is not None and current_bottom >= end_y:
-                h=0
-                while h < 2:
-                    h=h+1
-                    page.evaluate("window.scrollBy(0, 600)")
-                    page.wait_for_timeout(300)
-                    frame += 1
-                    frame_path = f"{base}_{frame}.{ext}"
-                    make_main_screenshot(page, path=frame_path)
                 print(f"  Достигнут конец блока (end_y={end_y}), кадров: {frame}")
                 break
 
