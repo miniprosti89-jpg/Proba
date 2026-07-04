@@ -1,0 +1,2 @@
+Ollama/**/*.exe filter=lfs diff=lfs merge=lfs -text
+Ollama/**/*.dll filter=lfs diff=lfs merge=lfs -text

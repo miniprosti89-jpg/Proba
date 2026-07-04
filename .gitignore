@@ -1,0 +1,11 @@
+# Ollama runtime — модели докачиваются автоматически при первом запуске
+# launcher.py (см. ensure_model_downloaded) прямо в Ollama_models\models,
+# коммитить их не нужно (единицы/десятки ГБ веса).
+Ollama_models/models/
+
+# Runtime-лог портативной Ollama — пересоздаётся при каждом запуске
+Ollama/ollama.log
+
+# Python
+__pycache__/
+*.pyc

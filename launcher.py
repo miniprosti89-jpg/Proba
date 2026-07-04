@@ -40,6 +40,46 @@ def wait_for_ollama(base_url, timeout=30):
     return False
 
 
+def ensure_model_downloaded(base_url):
+    """Проверяет, что OLLAMA_MODEL есть в этом инстансе Ollama, и докачивает
+    при необходимости через /api/pull.
+
+    Место скачивания определяет не клиент, а сервер: качает именно тот
+    процесс ollama serve, к которому мы стучимся по base_url, а он запущен
+    (см. start_ollama) с OLLAMA_MODELS, указывающим на Ollama_models/models
+    рядом с проектом. Поэтому модель физически не может уйти в корневой
+    %USERPROFILE%\\.ollama — только в папку проекта.
+    """
+    try:
+        resp = requests.get(f"{base_url}/api/tags", timeout=5)
+        resp.raise_for_status()
+        names = {m.get("name", "") for m in resp.json().get("models", [])}
+        if OLLAMA_MODEL in names:
+            print(f"Модель {OLLAMA_MODEL} уже есть в Ollama_models.")
+            return True
+    except Exception as e:
+        print(f"Не удалось проверить список моделей: {e}")
+        return False
+
+    print(f"Модель {OLLAMA_MODEL} не найдена в Ollama_models — скачиваю "
+          f"(нужен интернет, может занять несколько минут)...")
+    try:
+        resp = requests.post(f"{base_url}/api/pull",
+                              json={"model": OLLAMA_MODEL, "stream": False},
+                              timeout=1800)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("status") == "success":
+            print(f"Модель {OLLAMA_MODEL} скачана в Ollama_models.")
+            return True
+        print(f"Не удалось скачать модель {OLLAMA_MODEL}: {result}")
+        return False
+    except Exception as e:
+        print(f"Не удалось скачать модель {OLLAMA_MODEL}: {e}")
+        print("Продолжаем без LLM — используются только эвристики.")
+        return False
+
+
 def start_ollama():
     """Запускает портативную Ollama (Ollama/ollama.exe) с моделями из
     Ollama_models/models и прогревает OLLAMA_MODEL в память.
@@ -92,6 +132,9 @@ def start_ollama():
 
     if not wait_for_ollama(base_url, timeout=30):
         print("Предупреждение: Ollama не ответила за 30с, продолжаем без прогрева модели.")
+        return proc, base_url
+
+    if not ensure_model_downloaded(base_url):
         return proc, base_url
 
     print(f"Прогрев модели {OLLAMA_MODEL}...")
