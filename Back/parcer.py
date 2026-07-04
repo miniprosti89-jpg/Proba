@@ -43,29 +43,7 @@ def open_site(p, url):
     print(f"Переход по ссылке: {url}")
     page.goto(url, wait_until="domcontentloaded")
 
-    load_full_page(page)
-
     return browser, page
-
-
-def load_full_page(page, step=800, pause=200, max_scrolls=50):
-    """Прокручивает страницу до самого низа и обратно наверх.
-
-    Многие сайты дорендеривают контент (в т.ч. раздел описания) лениво,
-    по мере прокрутки — пока пользователь не долистает страницу, часть
-    DOM просто не существует. Прокручиваем до конца, чтобы всё успело
-    подгрузиться, затем возвращаемся в начало перед первым скриншотом.
-    """
-    print("Прокрутка страницы до конца для подгрузки ленивого контента...")
-    for _ in range(max_scrolls):
-        prev_y = page.evaluate("window.scrollY")
-        page.evaluate(f"window.scrollBy(0, {step})")
-        page.wait_for_timeout(pause)
-        current_y = page.evaluate("window.scrollY")
-        at_bottom = page.evaluate("window.scrollY + window.innerHeight >= document.body.scrollHeight - 2")
-        if at_bottom or current_y == prev_y:
-            break
-    page.wait_for_timeout(400)
 
     print("Возврат в начало страницы...")
     page.evaluate("window.scrollTo(0, 0)")
@@ -111,6 +89,13 @@ PICK_OVERLAY_JS = r"""
         return !!(el && el.closest && el.closest(`[${MARK}]`));
     }
 
+    // Клик по кнопке/ссылке сайта (например, по самой кнопке-триггеру,
+    // открывающей панель описания) почти никогда не то, что человек хочет
+    // выбрать как текст описания — такие клики не считаем выбором блока.
+    function isClickable(el) {
+        return !!(el && el.closest && el.closest('button, a, input, select, textarea, [role="button"]'));
+    }
+
     function setOutline(el, color) {
         if (!el) return;
         el.style.outline = color ? `3px solid ${color}` : '';
@@ -125,27 +110,7 @@ PICK_OVERLAY_JS = r"""
         toggleBtn.style.color = on ? '#fff' : '#111';
     }
 
-    toggleBtn.addEventListener('click', () => setPickMode(!pickMode), { signal });
-
-    document.addEventListener('mouseover', (e) => {
-        if (!pickMode || isOverlay(e.target)) return;
-        if (window.__pdHoverEl && window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, null);
-        window.__pdHoverEl = e.target;
-        if (window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, 'orange');
-    }, { capture: true, signal });
-
-    document.addEventListener('click', (e) => {
-        if (!pickMode || isOverlay(e.target)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (window.__pdPickedEl && window.__pdPickedEl !== e.target) setOutline(window.__pdPickedEl, null);
-        window.__pdPickedEl = e.target;
-        setOutline(window.__pdPickedEl, 'red');
-    }, { capture: true, signal });
-
-    // "Подтвердить" работает и без выбранного элемента — на странице может
-    // не быть нужного блока (например, описания).
-    confirmBtn.addEventListener('click', () => {
+    function confirmPick() {
         setPickMode(false);
         const pickedEl = window.__pdPickedEl;
         if (pickedEl) {
@@ -159,7 +124,47 @@ PICK_OVERLAY_JS = r"""
             window.__pdResult = null;
         }
         window.__pdConfirmed = true;
-    }, { signal });
+    }
+
+    // Некоторые сайты закрывают модалку/шторку с описанием по клику "снаружи"
+    // себя (обработчик на document, часто на mousedown — до всплытия click).
+    // Наша панель физически прикреплена к document.body, а не внутрь такой
+    // шторки, поэтому клик по нашим кнопкам считается "внешним" и закрывает её.
+    // window стоит в цепочке событий раньше document, поэтому перехватываем
+    // здесь — mousedown/pointerdown просто гасим, а click по своим кнопкам
+    // обрабатываем вручную, не давая событию вообще дойти до document.
+    ['mousedown', 'pointerdown', 'mouseup', 'pointerup'].forEach((evt) => {
+        window.addEventListener(evt, (e) => {
+            if (isOverlay(e.target)) e.stopPropagation();
+        }, { capture: true, signal });
+    });
+
+    window.addEventListener('mouseover', (e) => {
+        if (!pickMode || isOverlay(e.target) || isClickable(e.target)) return;
+        if (window.__pdHoverEl && window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, null);
+        window.__pdHoverEl = e.target;
+        if (window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, 'orange');
+    }, { capture: true, signal });
+
+    window.addEventListener('click', (e) => {
+        if (isOverlay(e.target)) {
+            e.preventDefault();
+            e.stopPropagation();
+            const btn = e.target.closest('button');
+            if (btn === toggleBtn) setPickMode(!pickMode);
+            else if (btn === confirmBtn) confirmPick();
+            return;
+        }
+        if (!pickMode) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Клик по кнопке/ссылке (например, по кнопке-триггеру, открывающей
+        // панель) не считаем выбором блока — гасим клик, но не выбираем.
+        if (isClickable(e.target)) return;
+        if (window.__pdPickedEl && window.__pdPickedEl !== e.target) setOutline(window.__pdPickedEl, null);
+        window.__pdPickedEl = e.target;
+        setOutline(window.__pdPickedEl, 'red');
+    }, { capture: true, signal });
 }
 """
 
@@ -183,6 +188,182 @@ PICK_CLEANUP_JS = r"""
     document.body.style.cursor = '';
 }
 """
+
+
+PICK_LOOP_OVERLAY_JS = r"""
+(instruction) => {
+    const MARK = 'data-pd-overlay';
+    window.__pdConfirmed = false;
+    window.__pdAction = null;
+    window.__pdResult = null;
+    window.__pdPickedEl = null;
+    window.__pdHoverEl = null;
+    window.__pdScrollContainer = null;
+
+    // Некоторые сайты показывают описание во всплывающей боковой панели/шторке
+    // со своей внутренней прокруткой (сама страница при этом не скроллится).
+    // Ищем ближайшего прокручиваемого предка выбранного элемента, чтобы потом
+    // при скриншотах листать именно его, а не document/window.
+    function findScrollableAncestor(el) {
+        let node = el ? el.parentElement : null;
+        while (node && node !== document.body && node !== document.documentElement) {
+            const style = getComputedStyle(node);
+            if ((style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+                node.scrollHeight > node.clientHeight + 20) {
+                return node;
+            }
+            node = node.parentElement;
+        }
+        return null;
+    }
+
+    const controller = new AbortController();
+    window.__pdAbort = controller;
+    const { signal } = controller;
+
+    const panel = document.createElement('div');
+    panel.setAttribute(MARK, '1');
+    panel.style.cssText = `
+        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+        background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
+        font: 14px/1.4 sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4);
+        max-width: 320px;
+    `;
+    panel.innerHTML = `
+        <div style="margin-bottom:8px;">${instruction}</div>
+        <button id="__pd_toggle" style="margin-right:6px;padding:6px 10px;cursor:pointer;background:#fff;color:#111;border:1px solid #999;border-radius:4px;">Включить выбор</button>
+        <button id="__pd_confirm" disabled style="margin-right:6px;padding:6px 10px;cursor:pointer;background:#1565c0;color:#fff;border:1px solid #0d47a1;border-radius:4px;">Подтвердить</button>
+        <button id="__pd_finish" style="padding:6px 10px;cursor:pointer;background:#2e7d32;color:#fff;border:1px solid #1b5e20;border-radius:4px;">Завершить</button>
+    `;
+    document.body.appendChild(panel);
+
+    const toggleBtn = panel.querySelector('#__pd_toggle');
+    const confirmBtn = panel.querySelector('#__pd_confirm');
+    const finishBtn = panel.querySelector('#__pd_finish');
+
+    let pickMode = false;
+
+    function isOverlay(el) {
+        return !!(el && el.closest && el.closest(`[${MARK}]`));
+    }
+
+    // Клик по кнопке/ссылке сайта (например, по самой кнопке-триггеру,
+    // открывающей панель описания) почти никогда не то, что человек хочет
+    // выбрать как текст описания — такие клики не считаем выбором блока.
+    function isClickable(el) {
+        return !!(el && el.closest && el.closest('button, a, input, select, textarea, [role="button"]'));
+    }
+
+    function setOutline(el, color) {
+        if (!el) return;
+        el.style.outline = color ? `3px solid ${color}` : '';
+        el.style.outlineOffset = color ? '-3px' : '';
+    }
+
+    function setPickMode(on) {
+        pickMode = on;
+        document.body.style.cursor = on ? 'crosshair' : '';
+        toggleBtn.textContent = on ? 'Режим выбора включён (клик по блоку)' : 'Включить выбор';
+        toggleBtn.style.background = on ? '#c62828' : '#fff';
+        toggleBtn.style.color = on ? '#fff' : '#111';
+    }
+
+    // "Подтвердить" добавляет текущий выбранный блок и позволяет продолжить
+    // выбор следующего (недоступно, пока ничего не выбрано).
+    function confirmPick() {
+        const pickedEl = window.__pdPickedEl;
+        if (!pickedEl || confirmBtn.disabled) return;
+        setPickMode(false);
+        const container = findScrollableAncestor(pickedEl);
+        window.__pdScrollContainer = container;
+        const rect = pickedEl.getBoundingClientRect();
+        const base = container ? container.scrollTop : window.scrollY;
+        // Если блок лежит внутри прокручиваемой панели — доскраливаем до
+        // самого конца ЭТОЙ панели (scrollHeight), а не только до нижней
+        // границы кликнутого элемента. Иначе если рядом (ниже, вне экрана
+        // в момент клика) есть соседний блок текста (например "Описание"
+        // сразу после таблиц характеристик), он не попадёт в кадр, хотя
+        // визуально клик выглядел как выбор "всей панели".
+        const endScrollY = container
+            ? container.scrollHeight
+            : Math.round(rect.bottom + base);
+        window.__pdResult = {
+            text: (pickedEl.innerText || '').trim(),
+            scrollY: Math.round(rect.top + base),
+            endScrollY: endScrollY,
+        };
+        window.__pdAction = 'confirm';
+        window.__pdConfirmed = true;
+    }
+
+    // "Завершить" работает всегда, даже без выбранного блока — на странице
+    // может не быть описания вовсе, или все нужные блоки уже подтверждены.
+    function finishPicking() {
+        setPickMode(false);
+        window.__pdResult = null;
+        window.__pdAction = 'finish';
+        window.__pdConfirmed = true;
+    }
+
+    // Некоторые сайты закрывают модалку/шторку с описанием по клику "снаружи"
+    // себя (обработчик на document, часто на mousedown — до всплытия click).
+    // Наша панель физически прикреплена к document.body, а не внутрь такой
+    // шторки, поэтому клик по нашим кнопкам считается "внешним" и закрывает её.
+    // window стоит в цепочке событий раньше document, поэтому перехватываем
+    // здесь — mousedown/pointerdown просто гасим, а click по своим кнопкам
+    // обрабатываем вручную, не давая событию вообще дойти до document.
+    ['mousedown', 'pointerdown', 'mouseup', 'pointerup'].forEach((evt) => {
+        window.addEventListener(evt, (e) => {
+            if (isOverlay(e.target)) e.stopPropagation();
+        }, { capture: true, signal });
+    });
+
+    window.addEventListener('mouseover', (e) => {
+        if (!pickMode || isOverlay(e.target) || isClickable(e.target)) return;
+        if (window.__pdHoverEl && window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, null);
+        window.__pdHoverEl = e.target;
+        if (window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, 'orange');
+    }, { capture: true, signal });
+
+    window.addEventListener('click', (e) => {
+        if (isOverlay(e.target)) {
+            e.preventDefault();
+            e.stopPropagation();
+            const btn = e.target.closest('button');
+            if (btn === toggleBtn) setPickMode(!pickMode);
+            else if (btn === confirmBtn) confirmPick();
+            else if (btn === finishBtn) finishPicking();
+            return;
+        }
+        if (!pickMode) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Клик по кнопке/ссылке (например, по кнопке-триггеру, открывающей
+        // панель) не считаем выбором блока — гасим клик, но не выбираем.
+        if (isClickable(e.target)) return;
+        if (window.__pdPickedEl && window.__pdPickedEl !== e.target) setOutline(window.__pdPickedEl, null);
+        window.__pdPickedEl = e.target;
+        setOutline(window.__pdPickedEl, 'red');
+        confirmBtn.disabled = false;
+    }, { capture: true, signal });
+}
+"""
+
+
+def pick_description_block(page, instruction):
+    """Один цикл выбора блока описания.
+
+    Возвращает (action, result):
+      action == "confirm" — result содержит {text, scrollY, endScrollY} блока;
+      action == "finish"  — result всегда None, цикл выбора завершён.
+    """
+    print(f"\n--- Ожидание ручного выбора: {instruction} ---")
+    page.evaluate(PICK_LOOP_OVERLAY_JS, instruction)
+    page.wait_for_function("window.__pdConfirmed === true", timeout=0)
+    action = page.evaluate("window.__pdAction")
+    result = page.evaluate("window.__pdResult")
+    page.evaluate(PICK_CLEANUP_JS)
+    return action, result
 
 
 def pick_element_manually(page, instruction):
@@ -252,102 +433,116 @@ def make_main_screenshot(page, path=None):
 
 
 
-def screenshot_description_and_specs(page, path="description_section.png", selector=None, scroll_y=None, end_y=None):
-    """Серия скриншотов с датой/временем, покрывающая раздел описания и характеристик.
+# Скроллим window.__pdScrollContainer, если pick_description_block его нашёл
+# (блок был внутри всплывающей панели/шторки со своей прокруткой) — иначе
+# обычную страницу. Ссылка на контейнер сохраняется на window ещё в момент
+# выбора блока (см. confirmPick в PICK_LOOP_OVERLAY_JS).
+SCROLL_TO_JS = """(y) => {
+    const c = window.__pdScrollContainer;
+    if (c && document.contains(c)) { c.scrollTop = Math.max(0, y); }
+    else { window.scrollTo(0, Math.max(0, y)); }
+}"""
 
-    Heading-режим (scroll_y задан):
-        Мотаем к началу блока (scroll_y - 200), затем каждые 300px делаем скриншот
-        через make_main_screenshot пока не достигнем end_y (нижний край блока).
+SCROLL_BY_JS = """(dy) => {
+    const c = window.__pdScrollContainer;
+    if (c && document.contains(c)) { c.scrollTop += dy; }
+    else { window.scrollBy(0, dy); }
+}"""
 
-    Panel-режим (scroll_y=None):
-        Прокручиваем панель в начало → скриншот, прокручиваем в конец → скриншот.
+SCROLL_BOTTOM_JS = """() => {
+    const c = window.__pdScrollContainer;
+    if (c && document.contains(c)) { return c.scrollTop + c.clientHeight; }
+    return window.scrollY + window.innerHeight;
+}"""
+
+
+def screenshot_description_and_specs(page, path="description_section.png", scroll_y=None, end_y=None, start_frame=1):
+    """Серия скриншотов с датой/временем, покрывающая один блок описания.
+
+    Мотаем к началу блока (scroll_y - 300), затем каждые 300px делаем скриншот
+    через make_main_screenshot пока не достигнем end_y (нижний край блока).
+    Если блок находится внутри всплывающей панели со своей прокруткой (не
+    самой страницы), листаем именно её — см. SCROLL_TO_JS/SCROLL_BY_JS.
+    Нумерация кадров начинается с start_frame — это позволяет вызывать функцию
+    несколько раз подряд (для нескольких блоков описания) без перезаписи
+    файлов предыдущих блоков.
+
+    Возвращает следующий свободный номер кадра (для следующего вызова).
     """
     base, ext = path.rsplit(".", 1) if "." in path else (path, "png")
 
-    if scroll_y is not None:
-        # === Heading-режим ===
-        # "- 300" вместо "- 200": даёт дополнительные ~100px запаса сверху,
-        # чтобы перед первым скриншотом страница была чуть приподнята
-        # и верх выбранного блока не оказывался у самого края кадра.
-        page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 300))")
-        page.wait_for_timeout(400)
+    # "- 300" вместо "- 200": даёт дополнительные ~100px запаса сверху,
+    # чтобы перед первым скриншотом страница была чуть приподнята
+    # и верх выбранного блока не оказывался у самого края кадра.
+    page.evaluate(SCROLL_TO_JS, max(0, scroll_y - 300))
+    page.wait_for_timeout(400)
 
-        frame = 1
-        while frame <= 20:
-            frame_path = f"{base}_{frame}.{ext}"
-            make_main_screenshot(page, path=frame_path)
+    frame = start_frame
+    while frame <= start_frame + 19:
+        frame_path = f"{base}_{frame}.{ext}"
+        make_main_screenshot(page, path=frame_path)
 
-            # Достигли нижней границы блока?
-            current_bottom = page.evaluate("window.scrollY + window.innerHeight")
-            if end_y is not None and current_bottom >= end_y:
-                print(f"  Достигнут конец блока (end_y={end_y}), кадров: {frame}")
-                break
+        # Достигли нижней границы блока?
+        current_bottom = page.evaluate(SCROLL_BOTTOM_JS)
+        if end_y is not None and current_bottom >= end_y:
+            print(f"  Достигнут конец блока (end_y={end_y}), кадров: {frame - start_frame + 1}")
+            break
 
-            page.evaluate("window.scrollBy(0, 600)")
-            page.wait_for_timeout(300)
-            frame += 1
+        page.evaluate(SCROLL_BY_JS, 600)
+        page.wait_for_timeout(300)
+        frame += 1
 
-    else:
-        # === Panel-режим ===
-        FIND_PANEL_JS = """() => {
-            let best = null, bestArea = 0;
-            for (const el of document.querySelectorAll('*')) {
-                if (el === document.body || el === document.documentElement) continue;
-                const oy = getComputedStyle(el).overflowY;
-                if (oy !== 'auto' && oy !== 'scroll') continue;
-                if (el.scrollHeight <= el.clientHeight + 50) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width === 0 || r.height < 200) continue;
-                if (r.bottom < 0 || r.top > window.innerHeight) continue;
-                const area = r.width * r.height;
-                if (area > bestArea) { bestArea = area; best = el; }
-            }
-            return best;
-        }"""
+    return frame + 1
 
-        page.evaluate(f"(() => {{ const p = ({FIND_PANEL_JS})(); if (p) p.scrollTop = 0; else window.scrollTo(0, 0); }})()")
-        page.wait_for_timeout(400)
-        make_main_screenshot(page, path=f"{base}_1.{ext}")
 
-        page.evaluate(f"(() => {{ const p = ({FIND_PANEL_JS})(); if (p) p.scrollTop = p.scrollHeight; else window.scrollTo(0, document.body.scrollHeight); }})()")
-        page.wait_for_timeout(400)
-        make_main_screenshot(page, path=f"{base}_2.{ext}")
+FIRST_BLOCK_INSTRUCTION = (
+    'Раскройте описание на странице (вкладки, «Показать полностью»), включите выбор '
+    'и кликните на блок с описанием. «Подтвердить» — добавить блок и продолжить выбор '
+    'следующего. «Завершить» — закончить (если блоков не было, описание останется пустым).'
+)
 
-    return True
+NEXT_BLOCK_INSTRUCTION = (
+    'Если описание продолжается в другом блоке — включите выбор, кликните на него '
+    'и нажмите «Подтвердить». Блоков больше нет — нажмите «Завершить».'
+)
 
 
 def pick_description_manually(page):
-    """Человек кликает в открытом браузере на блок с описанием товара.
+    """Человек кликает в открытом браузере на блоки с описанием товара.
 
-    Клик только подсвечивает кандидата; описание фиксируется отдельной
-    кнопкой "Подтвердить" в оверлее, чтобы случайный клик не сработал как выбор.
-    До включения режима выбора обычные клики по странице (вкладки, "Показать
-    полностью") проходят как есть — человек может сначала раскрыть текст.
-    Если описания на странице нет, "Подтвердить" можно нажать без выбора —
-    тогда description.txt останется пустым и скриншоты раздела не снимаются.
+    Описание нередко разбито на несколько отдельных JS-объектов на странице,
+    поэтому выбор циклический: после каждого подтверждённого блока сразу
+    снимается его серия скриншотов, а оверлей открывается заново — для
+    следующего блока. Нажатие "Завершить" останавливает цикл и записывает
+    накопленный текст в description.txt (пусто, если блоков не было).
     """
-    result = pick_element_manually(
-        page,
-        'Раскройте описание на странице (вкладки, «Показать полностью»), включите выбор '
-        'и кликните на блок с описанием. Если описания нет — нажмите «Подтвердить», ничего не выбирая.'
-    )
+    texts = []
+    next_frame = 1
 
-    text = result["text"] if result else ""
-    if result:
-        print(f"  Описание (выбор человека): {text[:80]}...")
+    while True:
+        instruction = FIRST_BLOCK_INSTRUCTION if not texts else NEXT_BLOCK_INSTRUCTION
+        action, result = pick_description_block(page, instruction)
+
+        if action == "finish":
+            break
+
+        text = result["text"]
+        texts.append(text)
+        print(f"  Блок описания #{len(texts)} (выбор человека): {text[:80]}...")
+
+        next_frame = screenshot_description_and_specs(
+            page, str(back_dir / "description_section.png"),
+            scroll_y=result.get("scrollY"), end_y=result.get("endScrollY"),
+            start_frame=next_frame,
+        )
+
+    if texts:
+        print(f"  Итоговое описание собрано из {len(texts)} блок(ов).")
     else:
-        print("  Описание не выбрано — блока с описанием на странице нет.")
+        print("  Описание не выбрано — блоков с описанием на странице нет.")
 
     with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
-        f.write(text)
-
-    if result:
-        screenshot_description_and_specs(
-            page, str(back_dir / "description_section.png"),
-            scroll_y=result.get("scrollY"), end_y=result.get("endScrollY")
-        )
-    else:
-        print("  Скриншоты раздела описания пропущены (описание не выбрано).")
+        f.write("\n\n".join(texts))
 
 
 # --- ЗАПУСК ---
