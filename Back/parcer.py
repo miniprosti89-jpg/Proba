@@ -40,9 +40,6 @@ def open_site(p, url):
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
 
-    # Устанавливаем размер окна для стандартного скриншота
-    page.set_viewport_size({"width": 1920, "height": 1080})
-
     print(f"Переход по ссылке: {url}")
     page.goto(url, wait_until="domcontentloaded")
 
