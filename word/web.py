@@ -71,6 +71,9 @@ with st.container():
             placeholder="Нажмите чтобы увидеть выпадающий список",
             key=f"criteria_{i}"
         )
+        if st.button("🗑️ Удалить этот URL", key=f"delete_{i}"):
+            st.session_state.url_entries.pop(i)
+            st.rerun()
 
     st.markdown("---")
 

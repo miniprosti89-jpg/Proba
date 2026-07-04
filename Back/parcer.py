@@ -4,7 +4,6 @@ import os
 import re
 import sys
 import textwrap
-import requests
 from io import BytesIO
 from datetime import datetime
 from playwright.sync_api import sync_playwright
@@ -20,11 +19,6 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='cp1251', errors='replace')
 
-#from llama_cpp import Llama
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:1.5b"
-
-#llm = Llama(model_path="./qwen2.5-3b.gguf")
 # --- НАСТРОЙКИ И ПУТИ ---
 
 
@@ -139,213 +133,144 @@ def load_full_page(page, step=800, pause=200, max_scrolls=50):
     page.wait_for_timeout(400)
 
 
-SERVICE_WORDS = [
-    "описание", "доставка", "возврат", "оплата", "отзыв", "гарантия",
-    "характеристики", "похожие товары", "с этим товаром", "подборки",
-    "преимущества", "состав", "инструкция", "вопросы и ответы", "о товаре",
-    "рекомендуем", "вам может понравиться", "хиты продаж", "акции",
-    "валюта", "покупателям", "продавцам", "наши проекты", "компания",
-    "приложение", "каталог", "корзина", "избранное",
-]
+PICK_OVERLAY_JS = r"""
+(instruction) => {
+    const MARK = 'data-pd-overlay';
+    window.__pdConfirmed = false;
+    window.__pdResult = null;
+    window.__pdPickedEl = null;
+    window.__pdHoverEl = null;
 
-# Слоганы сайта в og:title / <title>, которые не являются названием товара.
-GENERIC_MARKERS = [
-    "широкий ассортимент", "скидки каждый день", "ассортимент товаров",
-    "официальный сайт", "лучшие цены", "купить онлайн", "каталог товаров",
-    "интернет-магазин", "online store",
-]
+    // Отдельный AbortController на каждый вызов — гарантирует, что клик-перехватчик
+    // (capture-phase, блокирующий обычные клики по странице в режиме выбора)
+    // снимается вместе с оверлеем и не остаётся висеть на следующем шаге.
+    const controller = new AbortController();
+    window.__pdAbort = controller;
+    const { signal } = controller;
 
+    const panel = document.createElement('div');
+    panel.setAttribute(MARK, '1');
+    panel.style.cssText = `
+        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+        background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
+        font: 14px/1.4 sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4);
+        max-width: 320px;
+    `;
+    panel.innerHTML = `
+        <div style="margin-bottom:8px;">${instruction}</div>
+        <button id="__pd_toggle" style="margin-right:6px;padding:6px 10px;cursor:pointer;background:#fff;color:#111;border:1px solid #999;border-radius:4px;">Включить выбор</button>
+        <button id="__pd_confirm" style="padding:6px 10px;cursor:pointer;background:#2e7d32;color:#fff;border:1px solid #1b5e20;border-radius:4px;">Подтвердить</button>
+    `;
+    document.body.appendChild(panel);
 
-def is_service_heading(text):
-    """True, если заголовок — служебный раздел сайта, а не название товара."""
-    t = text.strip().lower()
-    return any(sw in t for sw in SERVICE_WORDS)
+    const toggleBtn = panel.querySelector('#__pd_toggle');
+    const confirmBtn = panel.querySelector('#__pd_confirm');
 
+    let pickMode = false;
 
-def is_generic_tagline(text):
-    """True, если текст — это общий слоган сайта, а не название товара."""
-    t = text.strip().lower()
-    return any(m in t for m in GENERIC_MARKERS)
+    function isOverlay(el) {
+        return !!(el && el.closest && el.closest(`[${MARK}]`));
+    }
 
+    function setOutline(el, color) {
+        if (!el) return;
+        el.style.outline = color ? `3px solid ${color}` : '';
+        el.style.outlineOffset = color ? '-3px' : '';
+    }
 
-def looks_like_product_name(text):
-    """Грубая проверка: похож ли текст на название товара."""
-    t = text.strip()
-    if len(t) < 10:
-        return False
-    if is_service_heading(t) or is_generic_tagline(t):
-        return False
-    # Чистое число / рейтинг / цена
-    if re.fullmatch(r'[\d\s.,%?₽$]+', t):
-        return False
-    # Нет ни одного нормального слова
-    if not re.search(r'[A-Za-zА-Яа-яЁё]{3,}', t):
-        return False
-    return True
+    function setPickMode(on) {
+        pickMode = on;
+        document.body.style.cursor = on ? 'crosshair' : '';
+        toggleBtn.textContent = on ? 'Режим выбора включён (клик по блоку)' : 'Включить выбор';
+        toggleBtn.style.background = on ? '#c62828' : '#fff';
+        toggleBtn.style.color = on ? '#fff' : '#111';
+    }
 
+    toggleBtn.addEventListener('click', () => setPickMode(!pickMode), { signal });
 
-def extract_from_title(title):
-    """Вытаскивает название товара из <title>.
+    document.addEventListener('mouseover', (e) => {
+        if (!pickMode || isOverlay(e.target)) return;
+        if (window.__pdHoverEl && window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, null);
+        window.__pdHoverEl = e.target;
+        if (window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, 'orange');
+    }, { capture: true, signal });
 
-    Типичный <title> страницы товара:
-      "Название товара БРЕНД 123456 купить за 2 843 ₽ в интернет-магазине Сайт"
-    Отрезаем имя сайта (по разделителям), хвост "купить ...", "за NNN ..."
-    и артикул (длинную последовательность цифр).
-    """
-    if not title:
-        return ""
-    seg = title.strip()
-    # Убираем ведущее "Купить "
-    seg = re.sub(r'^купить\s+', '', seg, flags=re.IGNORECASE)
-    # Отрезаем хвост "... купить ..." и "... за NNN ..."
-    seg = re.split(r'\s+купить\b', seg, flags=re.IGNORECASE)[0]
-    seg = re.split(r'\s+за\s+\d', seg, flags=re.IGNORECASE)[0]
-    # Отрезаем артикул и всё после него
-    seg = re.sub(r'\s+\d{5,}.*$', '', seg)
-    # Если остались разделители имени сайта (— | – /) — берём самый длинный сегмент.
-    # Обычный дефис не используем: он встречается внутри названий товаров.
-    parts = re.split(r'\s[—|–/]\s', seg)
-    if len(parts) > 1:
-        seg = max(parts, key=len)
-    # Зачищаем концы от висящих разделителей (напр. "– " перед отрезанным "купить")
-    return seg.strip(" \t\r\n–—|/·•")
+    document.addEventListener('click', (e) => {
+        if (!pickMode || isOverlay(e.target)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.__pdPickedEl && window.__pdPickedEl !== e.target) setOutline(window.__pdPickedEl, null);
+        window.__pdPickedEl = e.target;
+        setOutline(window.__pdPickedEl, 'red');
+    }, { capture: true, signal });
 
-
-def pick_product_name(headings, og_title, doc_title):
-    """Каскад выбора названия товара: <title> → og:title → <h1> → фильтр + LLM.
-
-    Порядок основан на надёжности сигнала. <title> почти всегда содержит
-    название товара в начале (требование SEO). LLM — последний резерв,
-    когда более надёжные сигналы не дали однозначного результата.
-    """
-    h1s = [h for h in headings if h["tag"] == "h1"]
-
-    # --- Шаг 1: <title> — самый надёжный сигнал на странице товара ---
-    title_name = extract_from_title(doc_title)
-    if looks_like_product_name(title_name):
-        print(f"  Каскад: из <title> → {title_name[:80]}")
-        return title_name
-
-    # --- Шаг 2: мета-тег og:title (если это не слоган сайта) ---
-    if og_title and looks_like_product_name(og_title):
-        print(f"  Каскад: из og:title → {og_title[:80]}")
-        return og_title
-
-    # --- Шаг 3: единственный <h1>, если похож на название ---
-    if len(h1s) == 1 and looks_like_product_name(h1s[0]["text"]):
-        print(f"  Каскад: единственный <h1> → {h1s[0]['text'][:80]}")
-        return h1s[0]["text"]
-
-    # --- Шаг 4: отбрасываем служебные/мусорные заголовки ---
-    candidates = [h for h in headings if looks_like_product_name(h["text"])]
-
-    if len(candidates) == 1:
-        print("  Каскад: единственный кандидат после фильтра")
-        return candidates[0]["text"]
-
-    if not candidates:
-        print("  Каскад: кандидатов не осталось")
-        return None
-
-    # --- Шаг 5: несколько кандидатов → отдаём короткий список LLM ---
-    print(f"  Каскад: {len(candidates)} кандидатов → спрашиваем LLM")
-    return llm_pick_product_name(candidates)
-
-
-def llm_pick_product_name(headings):
-    """Отправляет все заголовки в LLM и просит выбрать название товара.
-    Возвращает текст выбранного заголовка или None."""
-    if not headings:
-        return None
-
-    items = ""
-    for i, h in enumerate(headings):
-        items += f"[{i}] ({h['tag']}): {h['text'][:200]}\n"
-
-    prompt = f"""Тебе дан список заголовков со страницы маркетплейса.
-
-Задача: выбрать тот, который является названием товара.
-
-Название товара — конкретное описание продукта: тип, вкус, объём, вес, назначение, модель. Бренд необязателен.
-НЕ название: служебные разделы («Описание», «Отзывы», «Доставка», «Гарантия», «Характеристики», «Похожие товары», «Преимущества», «Состав» и т.п.)
-
-Примеры названий: "Хлорофилл жидкий со вкусом мяты, 500 мл", "Цинк пиколинат 25 мг 120 капсул", "Коллаген витамин С 200 г апельсин"
-
-Заголовки:
-{items}
-Ответь только номером в квадратных скобках, например: [2]"""
-
-    try:
-        resp = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0}
-        }, timeout=60)
-        resp.raise_for_status()
-        answer = resp.json()["response"].strip()
-        print(f"  LLM выбрал: {answer[:200]}")
-
-        if "NONE" in answer.upper():
-            return None
-        match = re.search(r'\[(\d+)\]', answer)
-        if match:
-            idx = int(match.group(1))
-            if 0 <= idx < len(headings):
-                return headings[idx]["text"]
-        return None
-    except Exception as e:
-        print(f"  Ошибка LLM-выбора названия: {e}")
-        return None
-
-
-def save_product_info(page):
-    """Ищет название товара среди h1/h2 через LLM. Сохраняет в product_name.txt."""
-
-    try:
-        page.wait_for_selector('h1, h2', timeout=10000)
-    except Exception:
-        print("  Предупреждение: h1/h2 не появились за 10с, пробуем всё равно.")
-
-    data = page.evaluate("""() => {
-        const result = [];
-        for (const tag of ['h1', 'h2']) {
-            for (const el of document.querySelectorAll(tag)) {
-                const text = (el.innerText || el.textContent || '').trim();
-                if (text.length < 3) continue;
-                result.push({ tag, text });
-            }
+    // "Подтвердить" работает и без выбранного элемента — на странице может
+    // не быть нужного блока (например, описания).
+    confirmBtn.addEventListener('click', () => {
+        setPickMode(false);
+        const pickedEl = window.__pdPickedEl;
+        if (pickedEl) {
+            const rect = pickedEl.getBoundingClientRect();
+            window.__pdResult = {
+                text: (pickedEl.innerText || '').trim(),
+                scrollY: Math.round(rect.top + window.scrollY),
+                endScrollY: Math.round(rect.bottom + window.scrollY),
+            };
+        } else {
+            window.__pdResult = null;
         }
-        const ogEl = document.querySelector('meta[property="og:title"]');
-        return {
-            headings: result,
-            ogTitle: ogEl ? (ogEl.content || '').trim() : '',
-            docTitle: (document.title || '').trim()
-        };
-    }""")
+        window.__pdConfirmed = true;
+    }, { signal });
+}
+"""
 
-    headings = data["headings"]
-    og_title = data["ogTitle"]
-    doc_title = data["docTitle"]
+PICK_CLEANUP_JS = r"""
+() => {
+    if (window.__pdAbort) {
+        window.__pdAbort.abort();
+        window.__pdAbort = null;
+    }
+    // Снимаем подсветку с выбранного/наведённого элемента — иначе рамка
+    // останется на реальном элементе страницы и попадёт на скриншоты.
+    for (const el of [window.__pdPickedEl, window.__pdHoverEl]) {
+        if (el) {
+            el.style.outline = '';
+            el.style.outlineOffset = '';
+        }
+    }
+    window.__pdPickedEl = null;
+    window.__pdHoverEl = null;
+    document.querySelectorAll('[data-pd-overlay]').forEach(el => el.remove());
+    document.body.style.cursor = '';
+}
+"""
 
-    h1s = [h for h in headings if h['tag'] == 'h1']
-    h2s = [h for h in headings if h['tag'] == 'h2']
-    print(f"  Найдено заголовков: h1={len(h1s)}, h2={len(h2s)}")
-    for h in headings:
-        print(f"    [{h['tag']}] {h['text'][:100]}")
-    print(f"  og:title: {og_title[:100]}")
-    print(f"  <title>: {doc_title[:100]}")
 
-    name = pick_product_name(headings, og_title, doc_title)
+def pick_element_manually(page, instruction):
+    """Показывает оверлей в браузере и ждёт, пока человек кликнет на нужный
+    блок и нажмёт "Подтвердить" (или подтвердит без выбора, если блока нет).
 
-    if name:
-        print(f"  LLM: название товара → {name[:80]}")
-        with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
-            f.write(name)
-    else:
-        print("  Название товара не найдено.")
-        with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
-            f.write("Название не найдено")
+    Возвращает {text, scrollY, endScrollY} выбранного элемента, либо None.
+    """
+    print(f"\n--- Ожидание ручного выбора: {instruction} ---")
+    page.evaluate(PICK_OVERLAY_JS, instruction)
+    page.wait_for_function("window.__pdConfirmed === true", timeout=0)
+    result = page.evaluate("window.__pdResult")
+    page.evaluate(PICK_CLEANUP_JS)
+    return result
+
+
+def pick_product_name_manually(page):
+    """Человек кликает на название товара в открытом браузере. Сохраняет в product_name.txt."""
+    result = pick_element_manually(
+        page,
+        'Кликните на название товара, затем нажмите «Подтвердить». '
+        'Если названия нет — нажмите «Подтвердить», ничего не выбирая.'
+    )
+    name = result["text"] if result else "Название не найдено"
+    print(f"  Название товара (выбор человека): {name[:80]}")
+    with open(back_dir / "product_name.txt", "w", encoding="utf-8", errors="replace") as f:
+        f.write(name)
 
 
 def make_main_screenshot(page, path=None):
@@ -449,89 +374,6 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
     return True
 
 
-PICK_OVERLAY_JS = r"""
-() => {
-    const MARK = 'data-pd-overlay';
-
-    const panel = document.createElement('div');
-    panel.setAttribute(MARK, '1');
-    panel.style.cssText = `
-        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
-        background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
-        font: 14px/1.4 sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4);
-        max-width: 320px;
-    `;
-    panel.innerHTML = `
-        <div style="margin-bottom:8px;">Раскройте описание на странице (вкладки, "Показать полностью"), затем включите выбор и кликните на блок с описанием.</div>
-        <button id="__pd_toggle" style="margin-right:6px;padding:6px 10px;cursor:pointer;">Выбрать блок описания</button>
-        <button id="__pd_confirm" disabled style="padding:6px 10px;cursor:pointer;">Подтвердить</button>
-    `;
-    document.body.appendChild(panel);
-
-    const toggleBtn = panel.querySelector('#__pd_toggle');
-    const confirmBtn = panel.querySelector('#__pd_confirm');
-
-    let pickMode = false;
-    let hoverEl = null;
-    let pickedEl = null;
-
-    function isOverlay(el) {
-        return !!(el && el.closest && el.closest(`[${MARK}]`));
-    }
-
-    function setOutline(el, color) {
-        if (!el) return;
-        el.style.outline = color ? `3px solid ${color}` : '';
-        el.style.outlineOffset = color ? '-3px' : '';
-    }
-
-    function setPickMode(on) {
-        pickMode = on;
-        document.body.style.cursor = on ? 'crosshair' : '';
-        toggleBtn.textContent = on ? 'Режим выбора включён (клик по блоку)' : 'Выбрать блок описания';
-        toggleBtn.style.background = on ? '#c62828' : '';
-    }
-
-    toggleBtn.addEventListener('click', () => setPickMode(!pickMode));
-
-    document.addEventListener('mouseover', (e) => {
-        if (!pickMode || isOverlay(e.target)) return;
-        if (hoverEl && hoverEl !== pickedEl) setOutline(hoverEl, null);
-        hoverEl = e.target;
-        if (hoverEl !== pickedEl) setOutline(hoverEl, 'orange');
-    }, true);
-
-    document.addEventListener('click', (e) => {
-        if (!pickMode || isOverlay(e.target)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (pickedEl && pickedEl !== e.target) setOutline(pickedEl, null);
-        pickedEl = e.target;
-        setOutline(pickedEl, 'red');
-        confirmBtn.disabled = false;
-    }, true);
-
-    confirmBtn.addEventListener('click', () => {
-        if (!pickedEl) return;
-        const rect = pickedEl.getBoundingClientRect();
-        window.__pdResult = {
-            text: (pickedEl.innerText || '').trim(),
-            scrollY: Math.round(rect.top + window.scrollY),
-            endScrollY: Math.round(rect.bottom + window.scrollY),
-        };
-        window.__pdConfirmed = true;
-    });
-}
-"""
-
-PICK_CLEANUP_JS = r"""
-() => {
-    document.querySelectorAll('[data-pd-overlay]').forEach(el => el.remove());
-    document.body.style.cursor = '';
-}
-"""
-
-
 def pick_description_manually(page):
     """Человек кликает в открытом браузере на блок с описанием товара.
 
@@ -539,22 +381,31 @@ def pick_description_manually(page):
     кнопкой "Подтвердить" в оверлее, чтобы случайный клик не сработал как выбор.
     До включения режима выбора обычные клики по странице (вкладки, "Показать
     полностью") проходят как есть — человек может сначала раскрыть текст.
+    Если описания на странице нет, "Подтвердить" можно нажать без выбора —
+    тогда description.txt останется пустым и скриншоты раздела не снимаются.
     """
-    print("\n--- Ожидание ручного выбора блока описания в браузере ---")
-    page.evaluate(PICK_OVERLAY_JS)
-    page.wait_for_function("window.__pdConfirmed === true", timeout=0)
-    result = page.evaluate("window.__pdResult")
-    page.evaluate(PICK_CLEANUP_JS)
+    result = pick_element_manually(
+        page,
+        'Раскройте описание на странице (вкладки, «Показать полностью»), включите выбор '
+        'и кликните на блок с описанием. Если описания нет — нажмите «Подтвердить», ничего не выбирая.'
+    )
 
-    text = result["text"]
-    print(f"  Выбрано человеком: {text[:80]}...")
+    text = result["text"] if result else ""
+    if result:
+        print(f"  Описание (выбор человека): {text[:80]}...")
+    else:
+        print("  Описание не выбрано — блока с описанием на странице нет.")
+
     with open(back_dir / "description.txt", "w", encoding="utf-8", errors="replace") as f:
         f.write(text)
 
-    screenshot_description_and_specs(
-        page, str(back_dir / "description_section.png"),
-        scroll_y=result.get("scrollY"), end_y=result.get("endScrollY")
-    )
+    if result:
+        screenshot_description_and_specs(
+            page, str(back_dir / "description_section.png"),
+            scroll_y=result.get("scrollY"), end_y=result.get("endScrollY")
+        )
+    else:
+        print("  Скриншоты раздела описания пропущены (описание не выбрано).")
 
 
 # --- ЗАПУСК ---
@@ -564,9 +415,9 @@ if __name__ == "__main__":
     with sync_playwright() as p:
         browser, page = open_site(p, target_url)
 
-        # Выполняем первую часть задач
+        # Выполняем первую часть задач — ручной выбор названия товара человеком
         time.sleep(3)
-        save_product_info(page)
+        pick_product_name_manually(page)
         make_main_screenshot(page)
 
         # Выполняем вторую часть — ручной выбор блока описания человеком
