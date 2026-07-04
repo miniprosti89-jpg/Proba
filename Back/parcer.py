@@ -40,9 +40,6 @@ def open_site(p, url):
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
 
-    # Устанавливаем размер окна для стандартного скриншота
-    page.set_viewport_size({"width": 1920, "height": 1080})
-
     print(f"Переход по ссылке: {url}")
     page.goto(url, wait_until="domcontentloaded")
 
@@ -269,7 +266,10 @@ def screenshot_description_and_specs(page, path="description_section.png", selec
 
     if scroll_y is not None:
         # === Heading-режим ===
-        page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 200))")
+        # "- 300" вместо "- 200": даёт дополнительные ~100px запаса сверху,
+        # чтобы перед первым скриншотом страница была чуть приподнята
+        # и верх выбранного блока не оказывался у самого края кадра.
+        page.evaluate(f"window.scrollTo(0, Math.max(0, {scroll_y} - 300))")
         page.wait_for_timeout(400)
 
         frame = 1
