@@ -21,6 +21,75 @@ if hasattr(sys.stderr, 'reconfigure'):
 # --- НАСТРОЙКИ И ПУТИ ---
 
 
+def wait_for_confirmed(page):
+    """Ждёт window.__pdConfirmed === true без page.wait_for_function().
+
+    wait_for_function (при любом polling — 'raf' или числовом интервале)
+    строит предикат из строки через eval() ВНУТРИ страницы, чтобы опрашивать
+    его без лишних CDP-round-trip'ов. На сайтах со строгим CSP без
+    'unsafe-eval' (например, github.com) это падает с EvalError сразу же —
+    ещё до того, как человек успевает что-то нажать. page.evaluate() же
+    выполняется через CDP Runtime.evaluate "снаружи" страницы и её CSP не
+    касается — поэтому опрашиваем флаг вручную из Python.
+    """
+    while not page.evaluate("window.__pdConfirmed"):
+        page.wait_for_timeout(100)
+
+# Многие сайты подключают собственный скрипт защиты от копирования, который
+# глушит ПКМ/некоторые клавиши через window.addEventListener(..., {capture:true})
+# и stopImmediatePropagation(). Если наш обработчик регистрируется позже (а
+# page.evaluate() всегда выполняется уже ПОСЛЕ загрузки и скриптов страницы),
+# он в такой гонке проигрывает и просто не получает событие.
+# add_init_script выполняется до вообще любого скрипта страницы (в момент
+# создания document, ещё до парсинга <head>), поэтому наш обработчик здесь
+# регистрируется первым и получает событие раньше любой защиты сайта —
+# независимо от того, что сайт сделает с событием после нас.
+PICK_CORE_INIT_JS = r"""
+(() => {
+    if (window.__pdCore) return;
+
+    let active = false;
+    let onPick = null;
+    let onEscape = null;
+
+    function isClickable(el) {
+        return !!(el && el.closest && el.closest('button, a, input, select, textarea, [role="button"]'));
+    }
+
+    window.addEventListener('mousedown', (e) => {
+        if (!active || e.button !== 2) return;
+        if (isClickable(e.target)) return;
+        if (onPick) onPick(e.target);
+    }, { capture: true });
+
+    window.addEventListener('contextmenu', (e) => {
+        if (!active) return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, { capture: true });
+
+    window.addEventListener('keydown', (e) => {
+        if (!active || e.key !== 'Escape') return;
+        e.preventDefault();
+        if (onEscape) onEscape();
+    }, { capture: true });
+
+    window.__pdCore = {
+        start(pickCb, escCb) {
+            active = true;
+            onPick = pickCb;
+            onEscape = escCb;
+        },
+        stop() {
+            active = false;
+            onPick = null;
+            onEscape = null;
+        },
+    };
+})();
+"""
+
+
 def open_site(p, url):
     """Запуск браузера и переход на страницу (поддерживает Linux и Windows).
 
@@ -39,9 +108,15 @@ def open_site(p, url):
 
     context = browser.contexts[0] if browser.contexts else browser.new_context()
     page = context.new_page()
+    page.add_init_script(PICK_CORE_INIT_JS)
 
     print(f"Переход по ссылке: {url}")
     page.goto(url, wait_until="domcontentloaded")
+
+    # Вкладки, созданные через CDP, не всегда становятся активными в окне
+    # браузера сами по себе — без этого человек может кликать/нажимать Esc
+    # на другой (видимой) вкладке, а наш оверлей висит на невидимой.
+    page.bring_to_front()
 
     return browser, page
 
@@ -92,7 +167,25 @@ PICK_OVERLAY_JS = r"""
 
     // ПКМ по нужному элементу сразу подтверждает выбор — без отдельной кнопки.
     // Esc подтверждает "ничего не выбрано" (например, если названия нет).
+    // Сам перехват ПКМ/Esc делает window.__pdCore (см. PICK_CORE_INIT_JS) —
+    // он регистрируется через add_init_script раньше любых скриптов страницы
+    // (в т.ч. её собственной защиты от копирования/ПКМ), а здесь мы только
+    // подписываемся на его колбэки на время текущего выбора.
+    //
+    // Важно: core НЕ останавливаем здесь. mousedown срабатывает раньше
+    // 'contextmenu' от того же самого клика — если тут же вызвать
+    // pdCore.stop(), 'active' станет false ещё до того, как придёт
+    // 'contextmenu', и core перестанет подавлять системное меню браузера
+    // (оно всё-таки появится и заберёт себе фокус клавиатуры, из-за чего
+    // Esc потом закрывает это меню вместо работы в нашем скрипте). Core
+    // останавливается только в PICK_CLEANUP_JS, когда Python уже забрал
+    // результат. done-флаг защищает от повторной обработки, если до этого
+    // момента придёт ещё одно событие.
+    let done = false;
     function confirmPick(pickedEl) {
+        if (done) return;
+        done = true;
+        console.log('[pd] confirmPick', pickedEl);
         if (pickedEl) {
             const rect = pickedEl.getBoundingClientRect();
             window.__pdResult = {
@@ -134,26 +227,16 @@ PICK_OVERLAY_JS = r"""
         }
     }, { capture: true, signal });
 
-    window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            confirmPick(null);
-        }
-    }, { capture: true, signal });
-
-    // ПКМ — единственный способ выбора: подавляем системное контекстное меню
-    // и сразу подтверждаем элемент под курсором.
-    window.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (isClickable(e.target)) return;
-        confirmPick(e.target);
-    }, { capture: true, signal });
+    window.__pdCore.start(
+        (el) => { console.log('[pd] pdCore pick', el); confirmPick(el); },
+        () => { console.log('[pd] pdCore escape'); confirmPick(null); },
+    );
 }
 """
 
 PICK_CLEANUP_JS = r"""
 () => {
+    if (window.__pdCore) window.__pdCore.stop();
     if (window.__pdAbort) {
         window.__pdAbort.abort();
         window.__pdAbort = null;
@@ -229,8 +312,25 @@ PICK_LOOP_OVERLAY_JS = r"""
     }
 
     // ПКМ по блоку сразу подтверждает его и добавляет в описание — без
-    // отдельной кнопки "Подтвердить".
+    // отдельной кнопки "Подтвердить". Сам перехват ПКМ/Esc делает
+    // window.__pdCore (см. PICK_CORE_INIT_JS) — он регистрируется через
+    // add_init_script раньше любых скриптов страницы (в т.ч. её собственной
+    // защиты от копирования/ПКМ), здесь мы только подписываемся на колбэки.
+    //
+    // Важно: core НЕ останавливаем здесь. mousedown срабатывает раньше
+    // 'contextmenu' от того же самого клика — если тут же вызвать
+    // pdCore.stop(), 'active' станет false ещё до того, как придёт
+    // 'contextmenu', и core перестанет подавлять системное меню браузера
+    // (оно всё-таки появится и заберёт себе фокус клавиатуры, из-за чего
+    // Esc потом закрывает это меню вместо работы в нашем скрипте). Core
+    // останавливается только в PICK_CLEANUP_JS, когда Python уже забрал
+    // результат. done-флаг защищает от повторной обработки, если до этого
+    // момента придёт ещё одно событие.
+    let done = false;
     function confirmPick(pickedEl) {
+        if (done) return;
+        done = true;
+        console.log('[pd] confirmPick', pickedEl);
         const container = findScrollableAncestor(pickedEl);
         window.__pdScrollContainer = container;
         const rect = pickedEl.getBoundingClientRect();
@@ -256,6 +356,9 @@ PICK_LOOP_OVERLAY_JS = r"""
     // Esc заменяет кнопку "Завершить" — работает всегда, даже без выбранного
     // блока (на странице может не быть описания вовсе, или блоки закончились).
     function finishPicking() {
+        if (done) return;
+        done = true;
+        console.log('[pd] finishPicking (Esc)');
         window.__pdResult = null;
         window.__pdAction = 'finish';
         window.__pdConfirmed = true;
@@ -289,21 +392,10 @@ PICK_LOOP_OVERLAY_JS = r"""
         }
     }, { capture: true, signal });
 
-    window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            finishPicking();
-        }
-    }, { capture: true, signal });
-
-    // ПКМ — единственный способ выбора: подавляем системное контекстное меню
-    // и сразу подтверждаем блок под курсором.
-    window.addEventListener('contextmenu', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (isClickable(e.target)) return;
-        confirmPick(e.target);
-    }, { capture: true, signal });
+    window.__pdCore.start(
+        (el) => { console.log('[pd] pdCore pick', el); confirmPick(el); },
+        () => { console.log('[pd] pdCore escape'); finishPicking(); },
+    );
 }
 """
 
@@ -317,7 +409,7 @@ def pick_description_block(page, instruction):
     """
     print(f"\n--- Ожидание ручного выбора: {instruction} ---")
     page.evaluate(PICK_LOOP_OVERLAY_JS, instruction)
-    page.wait_for_function("window.__pdConfirmed === true", timeout=0)
+    wait_for_confirmed(page)
     action = page.evaluate("window.__pdAction")
     result = page.evaluate("window.__pdResult")
     page.evaluate(PICK_CLEANUP_JS)
@@ -333,7 +425,7 @@ def pick_element_manually(page, instruction):
     """
     print(f"\n--- Ожидание ручного выбора: {instruction} ---")
     page.evaluate(PICK_OVERLAY_JS, instruction)
-    page.wait_for_function("window.__pdConfirmed === true", timeout=0)
+    wait_for_confirmed(page)
     result = page.evaluate("window.__pdResult")
     page.evaluate(PICK_CLEANUP_JS)
     return result
@@ -343,8 +435,7 @@ def pick_product_name_manually(page):
     """Человек кликает на название товара в открытом браузере. Сохраняет в product_name.txt."""
     result = pick_element_manually(
         page,
-        'Кликните правой кнопкой мыши на название товара — переход к описанию '
-        'произойдёт автоматически. Если названия нет — нажмите Esc.'
+        'Кликните правой кнопкой мыши на название товара. Если названия нет — нажмите Esc.'
     )
     name = result["text"] if result else "Название не найдено"
     print(f"  Название товара (выбор человека): {name[:80]}")

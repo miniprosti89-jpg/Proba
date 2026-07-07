@@ -11,20 +11,39 @@ if "url_entries" not in st.session_state:
 
 # ── Вспомогательная функция: запустить один скрипт и показать результат ───────
 def run_script(label, command):
+    # Скрипт может подолгу ждать ручного выбора в браузере (right-click/Esc) —
+    # subprocess.run(capture_output=True) отдаёт stdout только после того, как
+    # процесс уже завершился, поэтому пока он висит, в интерфейсе не видно
+    # вообще ничего. Здесь лог обновляется live по мере поступления строк —
+    # это и полезнее для пользователя, и позволяет видеть, на чём именно
+    # скрипт застрял, если он не завершается.
+    placeholder = st.empty()
+    lines = []
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding='cp1251',
-            errors='replace'
+            errors='replace',
+            bufsize=1,
         )
-        if result.returncode == 0:
+        for line in iter(process.stdout.readline, ''):
+            lines.append(line)
+            placeholder.code(f"{label}:\n" + "".join(lines))
+        process.stdout.close()
+        returncode = process.wait()
+
+        log_text = "".join(lines)
+        if returncode == 0:
+            placeholder.empty()
             st.success(f"✅ {label} — успех!")
-            st.text_area(f"Лог ({label}):", result.stdout, key=f"log_{label}_{id(command)}")
+            st.text_area(f"Лог ({label}):", log_text, key=f"log_{label}_{id(command)}")
         else:
+            placeholder.empty()
             st.error(f"❌ {label} — ошибка")
-            st.code(result.stderr)
+            st.code(log_text)
     except Exception as e:
         st.error(f"Не удалось запустить {label}: {e}")
 
@@ -95,16 +114,19 @@ with st.container():
 
                 st.markdown(f"### Обработка ссылки №{i + 1}: `{url_input}`")
 
+                # -u — без буферизации: иначе print() в дочернем процессе
+                # копится во внутреннем буфере Python и не доходит до нашего
+                # live-лога, пока буфер не заполнится или процесс не завершится.
                 run_script(
                     f"Парсинг (ссылка {i + 1})",
-                    [sys.executable, parcer_path, url_input, criteria_str]
+                    [sys.executable, "-u", parcer_path, url_input, criteria_str]
                 )
                 run_script(
                     f"Создание JSON (ссылка {i + 1})",
-                    [sys.executable, compiler_path, url_input, criteria_str]
+                    [sys.executable, "-u", compiler_path, url_input, criteria_str]
                 )
                 run_script(
                     f"Создание Word (ссылка {i + 1})",
-                    [sys.executable, word_path, url_input, criteria_str]
+                    [sys.executable, "-u", word_path, url_input, criteria_str]
                 )
 
