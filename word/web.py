@@ -30,65 +30,64 @@ def run_script(label, command):
 
 # ─────────────────────────────────────────────────────────────────────────────
 with st.container():
-    st.title("Локальный интерфейс")
-
-
-    # ── Поля ввода для каждого URL ────────────────────────────────────────────
+    # ── Поля ввода для каждой ссылки ──────────────────────────────────────────
     entries = st.session_state.url_entries
     count = len(entries)
-    st.write(f"**Количество URL: {count}**")
-
-
-    st.divider()
-    if st.button("🔴 Закрыть приложение"):
-        import streamlit.components.v1 as components
-        components.html("""
-            <script>window.top.close();</script>
-        """, height=0)
-
-        import threading
-
-        def shutdown():
-            import time
-            time.sleep(1)
-            os._exit(0)
-
-        threading.Thread(target=shutdown, daemon=True).start()
-
 
     for i, entry in enumerate(entries):
-        st.markdown(f"---\n#### URL №{i + 1}")
+        st.markdown(f"#### Ссылка №{i + 1}")
         entry["url"] = st.text_input(
             label=f"Ссылка {i + 1}:",
             value=entry["url"],
             placeholder="https://example.com",
             key=f"url_{i}"
         )
-        entry["criteria"] = st.multiselect(
-            label=f"Критерии для URL {i + 1} (1–4):",
-            options=[1, 2, 3, 4],
-            default=entry["criteria"],
-            placeholder="Нажмите чтобы увидеть выпадающий список",
-            key=f"criteria_{i}"
-        )
-        if st.button("🗑️ Удалить этот URL", key=f"delete_{i}"):
+        st.write(f"Критерии для ссылки {i + 1} (1–4):")
+        crit_cols = st.columns(4)
+        for n in range(1, 5):
+            active = n in entry["criteria"]
+            if crit_cols[n - 1].button(
+                f"✅ {n}" if active else str(n),
+                key=f"criteria_{i}_{n}",
+                type="primary" if active else "secondary",
+                use_container_width=True,
+            ):
+                if active:
+                    entry["criteria"].remove(n)
+                else:
+                    entry["criteria"].append(n)
+                st.rerun()
+        if st.button("🗑️ Удалить эту ссылку", key=f"delete_{i}"):
             st.session_state.url_entries.pop(i)
             st.rerun()
+        st.divider()
 
-    st.markdown("---")
-
-    # ── Кнопка «Добавить URL» ─────────────────────────────────────────────────
-    if st.button("➕ Добавить URL"):
+    # ── Кнопка «Добавить ссылку» ───────────────────────────────────────────────
+    if st.button("➕ Добавить ссылку"):
         st.session_state.url_entries.append({"url": "", "criteria": []})
         st.rerun()
 
-    # ── Кнопка «Удалить последний» (если больше одного) ──────────────────────
-    if count > 1 and st.button("➖ Удалить последний URL"):
+    # ── Кнопка «Удалить последнюю» (если больше одной) ────────────────────────
+    if count > 1 and st.button("➖ Удалить последнюю ссылку"):
         st.session_state.url_entries.pop()
         st.rerun()
 
     # ── Кнопка «Создать отчёт» ────────────────────────────────────────────────
-    if st.button("Создать отчёт"):
+    st.markdown("""
+        <style>
+        .st-key-create_report button {
+            background-color: #28a745;
+            color: white;
+            border-color: #28a745;
+        }
+        .st-key-create_report button:hover {
+            background-color: #218838;
+            color: white;
+            border-color: #218838;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    if st.button("Создать отчёт", key="create_report"):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         parent_dir  = os.path.dirname(current_dir)
         parcer_path   = os.path.join(parent_dir, "Back", "parcer.py")
@@ -109,18 +108,18 @@ with st.container():
                 url_input    = entry["url"]
                 criteria_str = ",".join(map(str, sorted(entry["criteria"])))
 
-                st.markdown(f"### Обработка URL №{i + 1}: `{url_input}`")
+                st.markdown(f"### Обработка ссылки №{i + 1}: `{url_input}`")
 
                 run_script(
-                    f"Парсинг (URL {i + 1})",
+                    f"Парсинг (ссылка {i + 1})",
                     [sys.executable, parcer_path, url_input, criteria_str]
                 )
                 run_script(
-                    f"Создание JSON (URL {i + 1})",
+                    f"Создание JSON (ссылка {i + 1})",
                     [sys.executable, compiler_path, url_input, criteria_str]
                 )
                 run_script(
-                    f"Создание Word (URL {i + 1})",
+                    f"Создание Word (ссылка {i + 1})",
                     [sys.executable, word_path, url_input, criteria_str]
                 )
 
