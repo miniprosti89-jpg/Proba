@@ -32,17 +32,15 @@ def run_script(label, command):
 with st.container():
     # ── Поля ввода для каждой ссылки ──────────────────────────────────────────
     entries = st.session_state.url_entries
-    count = len(entries)
 
     for i, entry in enumerate(entries):
-        st.markdown(f"#### Ссылка №{i + 1}")
         entry["url"] = st.text_input(
-            label=f"Ссылка {i + 1}:",
+            label=f"Вставьте ссылку:",
             value=entry["url"],
             placeholder="https://example.com",
             key=f"url_{i}"
         )
-        st.write(f"Критерии для ссылки {i + 1} (1–4):")
+        st.write(f"Критерии (1–4):")
         crit_cols = st.columns(4)
         for n in range(1, 5):
             active = n in entry["criteria"]
@@ -57,20 +55,7 @@ with st.container():
                 else:
                     entry["criteria"].append(n)
                 st.rerun()
-        if st.button("🗑️ Удалить эту ссылку", key=f"delete_{i}"):
-            st.session_state.url_entries.pop(i)
-            st.rerun()
         st.divider()
-
-    # ── Кнопка «Добавить ссылку» ───────────────────────────────────────────────
-    if st.button("➕ Добавить ссылку"):
-        st.session_state.url_entries.append({"url": "", "criteria": []})
-        st.rerun()
-
-    # ── Кнопка «Удалить последнюю» (если больше одной) ────────────────────────
-    if count > 1 and st.button("➖ Удалить последнюю ссылку"):
-        st.session_state.url_entries.pop()
-        st.rerun()
 
     # ── Кнопка «Создать отчёт» ────────────────────────────────────────────────
     st.markdown("""
