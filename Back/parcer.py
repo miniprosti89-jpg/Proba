@@ -55,43 +55,31 @@ PICK_OVERLAY_JS = r"""
     const MARK = 'data-pd-overlay';
     window.__pdConfirmed = false;
     window.__pdResult = null;
-    window.__pdPickedEl = null;
     window.__pdHoverEl = null;
 
-    // Отдельный AbortController на каждый вызов — гарантирует, что клик-перехватчик
-    // (capture-phase, блокирующий обычные клики по странице в режиме выбора)
-    // снимается вместе с оверлеем и не остаётся висеть на следующем шаге.
+    // Отдельный AbortController на каждый вызов — гарантирует, что обработчики
+    // снимаются вместе с оверлеем и не остаются висеть на следующем шаге.
     const controller = new AbortController();
     window.__pdAbort = controller;
     const { signal } = controller;
 
+    // pointer-events: none — панель чисто информационная (без кнопок),
+    // поэтому не должна перехватывать ни ЛКМ, ни ПКМ: клики проходят
+    // "сквозь" неё к реальному содержимому страницы под курсором.
     const panel = document.createElement('div');
     panel.setAttribute(MARK, '1');
     panel.style.cssText = `
-        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+        position: fixed; left: 0px; top: 0px; z-index: 2147483647;
         background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
         font: 14px/1.4 sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4);
-        max-width: 320px;
+        max-width: 320px; pointer-events: none;
     `;
-    panel.innerHTML = `
-        <div style="margin-bottom:8px;">${instruction}</div>
-        <button id="__pd_toggle" style="margin-right:6px;padding:6px 10px;cursor:pointer;background:#fff;color:#111;border:1px solid #999;border-radius:4px;">Включить выбор</button>
-        <button id="__pd_confirm" style="padding:6px 10px;cursor:pointer;background:#2e7d32;color:#fff;border:1px solid #1b5e20;border-radius:4px;">Подтвердить</button>
-    `;
+    panel.textContent = instruction;
     document.body.appendChild(panel);
 
-    const toggleBtn = panel.querySelector('#__pd_toggle');
-    const confirmBtn = panel.querySelector('#__pd_confirm');
-
-    let pickMode = false;
-
-    function isOverlay(el) {
-        return !!(el && el.closest && el.closest(`[${MARK}]`));
-    }
-
-    // Клик по кнопке/ссылке сайта (например, по самой кнопке-триггеру,
-    // открывающей панель описания) почти никогда не то, что человек хочет
-    // выбрать как текст описания — такие клики не считаем выбором блока.
+    // Клик правой кнопкой по кнопке/ссылке сайта (например, по самой кнопке-
+    // триггеру, открывающей панель описания) почти никогда не то, что человек
+    // хочет выбрать как текст — такие клики не считаем выбором блока.
     function isClickable(el) {
         return !!(el && el.closest && el.closest('button, a, input, select, textarea, [role="button"]'));
     }
@@ -102,17 +90,9 @@ PICK_OVERLAY_JS = r"""
         el.style.outlineOffset = color ? '-3px' : '';
     }
 
-    function setPickMode(on) {
-        pickMode = on;
-        document.body.style.cursor = on ? 'crosshair' : '';
-        toggleBtn.textContent = on ? 'Режим выбора включён (клик по блоку)' : 'Включить выбор';
-        toggleBtn.style.background = on ? '#c62828' : '#fff';
-        toggleBtn.style.color = on ? '#fff' : '#111';
-    }
-
-    function confirmPick() {
-        setPickMode(false);
-        const pickedEl = window.__pdPickedEl;
+    // ПКМ по нужному элементу сразу подтверждает выбор — без отдельной кнопки.
+    // Esc подтверждает "ничего не выбрано" (например, если названия нет).
+    function confirmPick(pickedEl) {
         if (pickedEl) {
             const rect = pickedEl.getBoundingClientRect();
             window.__pdResult = {
@@ -126,44 +106,48 @@ PICK_OVERLAY_JS = r"""
         window.__pdConfirmed = true;
     }
 
-    // Некоторые сайты закрывают модалку/шторку с описанием по клику "снаружи"
-    // себя (обработчик на document, часто на mousedown — до всплытия click).
-    // Наша панель физически прикреплена к document.body, а не внутрь такой
-    // шторки, поэтому клик по нашим кнопкам считается "внешним" и закрывает её.
-    // window стоит в цепочке событий раньше document, поэтому перехватываем
-    // здесь — mousedown/pointerdown просто гасим, а click по своим кнопкам
-    // обрабатываем вручную, не давая событию вообще дойти до document.
-    ['mousedown', 'pointerdown', 'mouseup', 'pointerup'].forEach((evt) => {
-        window.addEventListener(evt, (e) => {
-            if (isOverlay(e.target)) e.stopPropagation();
-        }, { capture: true, signal });
-    });
+    // Панель привязана к курсору и держится снизу-справа от него.
+    function positionPanel(x, y) {
+        const gap = 16;
+        const pw = panel.offsetWidth;
+        const ph = panel.offsetHeight;
+        let left = Math.max(4, Math.min(x + gap, window.innerWidth - pw - 4));
+        let top = Math.max(4, Math.min(y + gap, window.innerHeight - ph - 4));
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+    }
+    positionPanel(0, 0);
+    window.addEventListener('mousemove', (e) => positionPanel(e.clientX, e.clientY), { capture: true, signal });
 
+    // Подсветка элемента под курсором работает постоянно (ЛКМ при этом
+    // свободна для обычного взаимодействия с сайтом — мы её не перехватываем).
     window.addEventListener('mouseover', (e) => {
-        if (!pickMode || isOverlay(e.target) || isClickable(e.target)) return;
-        if (window.__pdHoverEl && window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, null);
+        if (isClickable(e.target)) return;
         window.__pdHoverEl = e.target;
-        if (window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, 'orange');
+        setOutline(e.target, 'orange');
     }, { capture: true, signal });
 
-    window.addEventListener('click', (e) => {
-        if (isOverlay(e.target)) {
-            e.preventDefault();
-            e.stopPropagation();
-            const btn = e.target.closest('button');
-            if (btn === toggleBtn) setPickMode(!pickMode);
-            else if (btn === confirmBtn) confirmPick();
-            return;
+    window.addEventListener('mouseout', (e) => {
+        if (window.__pdHoverEl === e.target) {
+            setOutline(e.target, null);
+            window.__pdHoverEl = null;
         }
-        if (!pickMode) return;
+    }, { capture: true, signal });
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            confirmPick(null);
+        }
+    }, { capture: true, signal });
+
+    // ПКМ — единственный способ выбора: подавляем системное контекстное меню
+    // и сразу подтверждаем элемент под курсором.
+    window.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        // Клик по кнопке/ссылке (например, по кнопке-триггеру, открывающей
-        // панель) не считаем выбором блока — гасим клик, но не выбираем.
         if (isClickable(e.target)) return;
-        if (window.__pdPickedEl && window.__pdPickedEl !== e.target) setOutline(window.__pdPickedEl, null);
-        window.__pdPickedEl = e.target;
-        setOutline(window.__pdPickedEl, 'red');
+        confirmPick(e.target);
     }, { capture: true, signal });
 }
 """
@@ -174,15 +158,12 @@ PICK_CLEANUP_JS = r"""
         window.__pdAbort.abort();
         window.__pdAbort = null;
     }
-    // Снимаем подсветку с выбранного/наведённого элемента — иначе рамка
-    // останется на реальном элементе страницы и попадёт на скриншоты.
-    for (const el of [window.__pdPickedEl, window.__pdHoverEl]) {
-        if (el) {
-            el.style.outline = '';
-            el.style.outlineOffset = '';
-        }
+    // Снимаем подсветку с наведённого элемента — иначе рамка останется на
+    // реальном элементе страницы и попадёт на скриншоты.
+    if (window.__pdHoverEl) {
+        window.__pdHoverEl.style.outline = '';
+        window.__pdHoverEl.style.outlineOffset = '';
     }
-    window.__pdPickedEl = null;
     window.__pdHoverEl = null;
     document.querySelectorAll('[data-pd-overlay]').forEach(el => el.remove());
     document.body.style.cursor = '';
@@ -196,7 +177,6 @@ PICK_LOOP_OVERLAY_JS = r"""
     window.__pdConfirmed = false;
     window.__pdAction = null;
     window.__pdResult = null;
-    window.__pdPickedEl = null;
     window.__pdHoverEl = null;
     window.__pdScrollContainer = null;
 
@@ -221,33 +201,21 @@ PICK_LOOP_OVERLAY_JS = r"""
     window.__pdAbort = controller;
     const { signal } = controller;
 
+    // pointer-events: none — панель чисто информационная (без кнопок),
+    // поэтому не должна перехватывать ни ЛКМ, ни ПКМ: клики проходят
+    // "сквозь" неё к реальному содержимому страницы под курсором.
     const panel = document.createElement('div');
     panel.setAttribute(MARK, '1');
     panel.style.cssText = `
-        position: fixed; top: 12px; right: 12px; z-index: 2147483647;
+        position: fixed; left: 0px; top: 0px; z-index: 2147483647;
         background: #222; color: #fff; padding: 10px 14px; border-radius: 8px;
         font: 14px/1.4 sans-serif; box-shadow: 0 2px 10px rgba(0,0,0,.4);
-        max-width: 320px;
+        max-width: 320px; pointer-events: none;
     `;
-    panel.innerHTML = `
-        <div style="margin-bottom:8px;">${instruction}</div>
-        <button id="__pd_toggle" style="margin-right:6px;padding:6px 10px;cursor:pointer;background:#fff;color:#111;border:1px solid #999;border-radius:4px;">Включить выбор</button>
-        <button id="__pd_confirm" disabled style="margin-right:6px;padding:6px 10px;cursor:pointer;background:#1565c0;color:#fff;border:1px solid #0d47a1;border-radius:4px;">Подтвердить</button>
-        <button id="__pd_finish" style="padding:6px 10px;cursor:pointer;background:#2e7d32;color:#fff;border:1px solid #1b5e20;border-radius:4px;">Завершить</button>
-    `;
+    panel.textContent = instruction;
     document.body.appendChild(panel);
 
-    const toggleBtn = panel.querySelector('#__pd_toggle');
-    const confirmBtn = panel.querySelector('#__pd_confirm');
-    const finishBtn = panel.querySelector('#__pd_finish');
-
-    let pickMode = false;
-
-    function isOverlay(el) {
-        return !!(el && el.closest && el.closest(`[${MARK}]`));
-    }
-
-    // Клик по кнопке/ссылке сайта (например, по самой кнопке-триггеру,
+    // ПКМ по кнопке/ссылке сайта (например, по самой кнопке-триггеру,
     // открывающей панель описания) почти никогда не то, что человек хочет
     // выбрать как текст описания — такие клики не считаем выбором блока.
     function isClickable(el) {
@@ -260,20 +228,9 @@ PICK_LOOP_OVERLAY_JS = r"""
         el.style.outlineOffset = color ? '-3px' : '';
     }
 
-    function setPickMode(on) {
-        pickMode = on;
-        document.body.style.cursor = on ? 'crosshair' : '';
-        toggleBtn.textContent = on ? 'Режим выбора включён (клик по блоку)' : 'Включить выбор';
-        toggleBtn.style.background = on ? '#c62828' : '#fff';
-        toggleBtn.style.color = on ? '#fff' : '#111';
-    }
-
-    // "Подтвердить" добавляет текущий выбранный блок и позволяет продолжить
-    // выбор следующего (недоступно, пока ничего не выбрано).
-    function confirmPick() {
-        const pickedEl = window.__pdPickedEl;
-        if (!pickedEl || confirmBtn.disabled) return;
-        setPickMode(false);
+    // ПКМ по блоку сразу подтверждает его и добавляет в описание — без
+    // отдельной кнопки "Подтвердить".
+    function confirmPick(pickedEl) {
         const container = findScrollableAncestor(pickedEl);
         window.__pdScrollContainer = container;
         const rect = pickedEl.getBoundingClientRect();
@@ -296,55 +253,56 @@ PICK_LOOP_OVERLAY_JS = r"""
         window.__pdConfirmed = true;
     }
 
-    // "Завершить" работает всегда, даже без выбранного блока — на странице
-    // может не быть описания вовсе, или все нужные блоки уже подтверждены.
+    // Esc заменяет кнопку "Завершить" — работает всегда, даже без выбранного
+    // блока (на странице может не быть описания вовсе, или блоки закончились).
     function finishPicking() {
-        setPickMode(false);
         window.__pdResult = null;
         window.__pdAction = 'finish';
         window.__pdConfirmed = true;
     }
 
-    // Некоторые сайты закрывают модалку/шторку с описанием по клику "снаружи"
-    // себя (обработчик на document, часто на mousedown — до всплытия click).
-    // Наша панель физически прикреплена к document.body, а не внутрь такой
-    // шторки, поэтому клик по нашим кнопкам считается "внешним" и закрывает её.
-    // window стоит в цепочке событий раньше document, поэтому перехватываем
-    // здесь — mousedown/pointerdown просто гасим, а click по своим кнопкам
-    // обрабатываем вручную, не давая событию вообще дойти до document.
-    ['mousedown', 'pointerdown', 'mouseup', 'pointerup'].forEach((evt) => {
-        window.addEventListener(evt, (e) => {
-            if (isOverlay(e.target)) e.stopPropagation();
-        }, { capture: true, signal });
-    });
+    // Панель привязана к курсору и держится снизу-справа от него.
+    function positionPanel(x, y) {
+        const gap = 16;
+        const pw = panel.offsetWidth;
+        const ph = panel.offsetHeight;
+        let left = Math.max(4, Math.min(x + gap, window.innerWidth - pw - 4));
+        let top = Math.max(4, Math.min(y + gap, window.innerHeight - ph - 4));
+        panel.style.left = `${left}px`;
+        panel.style.top = `${top}px`;
+    }
+    positionPanel(0, 0);
+    window.addEventListener('mousemove', (e) => positionPanel(e.clientX, e.clientY), { capture: true, signal });
 
+    // Подсветка элемента под курсором работает постоянно (ЛКМ при этом
+    // свободна для обычного взаимодействия с сайтом — мы её не перехватываем).
     window.addEventListener('mouseover', (e) => {
-        if (!pickMode || isOverlay(e.target) || isClickable(e.target)) return;
-        if (window.__pdHoverEl && window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, null);
+        if (isClickable(e.target)) return;
         window.__pdHoverEl = e.target;
-        if (window.__pdHoverEl !== window.__pdPickedEl) setOutline(window.__pdHoverEl, 'orange');
+        setOutline(e.target, 'orange');
     }, { capture: true, signal });
 
-    window.addEventListener('click', (e) => {
-        if (isOverlay(e.target)) {
-            e.preventDefault();
-            e.stopPropagation();
-            const btn = e.target.closest('button');
-            if (btn === toggleBtn) setPickMode(!pickMode);
-            else if (btn === confirmBtn) confirmPick();
-            else if (btn === finishBtn) finishPicking();
-            return;
+    window.addEventListener('mouseout', (e) => {
+        if (window.__pdHoverEl === e.target) {
+            setOutline(e.target, null);
+            window.__pdHoverEl = null;
         }
-        if (!pickMode) return;
+    }, { capture: true, signal });
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            finishPicking();
+        }
+    }, { capture: true, signal });
+
+    // ПКМ — единственный способ выбора: подавляем системное контекстное меню
+    // и сразу подтверждаем блок под курсором.
+    window.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        // Клик по кнопке/ссылке (например, по кнопке-триггеру, открывающей
-        // панель) не считаем выбором блока — гасим клик, но не выбираем.
         if (isClickable(e.target)) return;
-        if (window.__pdPickedEl && window.__pdPickedEl !== e.target) setOutline(window.__pdPickedEl, null);
-        window.__pdPickedEl = e.target;
-        setOutline(window.__pdPickedEl, 'red');
-        confirmBtn.disabled = false;
+        confirmPick(e.target);
     }, { capture: true, signal });
 }
 """
@@ -367,8 +325,9 @@ def pick_description_block(page, instruction):
 
 
 def pick_element_manually(page, instruction):
-    """Показывает оверлей в браузере и ждёт, пока человек кликнет на нужный
-    блок и нажмёт "Подтвердить" (или подтвердит без выбора, если блока нет).
+    """Показывает оверлей в браузере и ждёт, пока человек кликнет правой кнопкой
+    мыши на нужный блок (клик сразу подтверждает выбор) либо нажмёт Esc, если
+    блока нет. ЛКМ при этом свободна для обычного взаимодействия с сайтом.
 
     Возвращает {text, scrollY, endScrollY} выбранного элемента, либо None.
     """
@@ -384,8 +343,8 @@ def pick_product_name_manually(page):
     """Человек кликает на название товара в открытом браузере. Сохраняет в product_name.txt."""
     result = pick_element_manually(
         page,
-        'Кликните на название товара, затем нажмите «Подтвердить». '
-        'Если названия нет — нажмите «Подтвердить», ничего не выбирая.'
+        'Кликните правой кнопкой мыши на название товара — переход к описанию '
+        'произойдёт автоматически. Если названия нет — нажмите Esc.'
     )
     name = result["text"] if result else "Название не найдено"
     print(f"  Название товара (выбор человека): {name[:80]}")
@@ -496,14 +455,14 @@ def screenshot_description_and_specs(page, path="description_section.png", scrol
 
 
 FIRST_BLOCK_INSTRUCTION = (
-    'Раскройте описание на странице (вкладки, «Показать полностью»), включите выбор '
-    'и кликните на блок с описанием. «Подтвердить» — добавить блок и продолжить выбор '
-    'следующего. «Завершить» — закончить (если блоков не было, описание останется пустым).'
+    'Раскройте описание на странице (вкладки, «Показать полностью») и кликните '
+    'правой кнопкой мыши на блок с описанием — блок добавится, и откроется выбор '
+    'следующего. Если блоков нет — нажмите Esc (описание останется пустым).'
 )
 
 NEXT_BLOCK_INSTRUCTION = (
-    'Если описание продолжается в другом блоке — включите выбор, кликните на него '
-    'и нажмите «Подтвердить». Блоков больше нет — нажмите «Завершить».'
+    'Если описание продолжается в другом блоке — кликните на него правой кнопкой '
+    'мыши. Блоков больше нет — нажмите Esc.'
 )
 
 
@@ -513,7 +472,7 @@ def pick_description_manually(page):
     Описание нередко разбито на несколько отдельных JS-объектов на странице,
     поэтому выбор циклический: после каждого подтверждённого блока сразу
     снимается его серия скриншотов, а оверлей открывается заново — для
-    следующего блока. Нажатие "Завершить" останавливает цикл и записывает
+    следующего блока. Нажатие Esc останавливает цикл и записывает
     накопленный текст в description.txt (пусто, если блоков не было).
     """
     texts = []
