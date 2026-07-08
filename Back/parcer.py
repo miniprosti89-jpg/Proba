@@ -165,6 +165,36 @@ PICK_OVERLAY_JS = r"""
         el.style.outlineOffset = color ? '-3px' : '';
     }
 
+    let lastX = 0;
+    let lastY = 0;
+
+    // Короткое уведомление снизу-слева от курсора. Без атрибута MARK — иначе
+    // PICK_CLEANUP_JS (вызывается сразу после подтверждения выбора) удалит
+    // его мгновенно, не дав провисеть отведённую секунду. Помечено отдельным
+    // data-pd-toast — по нему make_main_screenshot прячет плашку на время
+    // снимка, чтобы она не попадала на скриншоты.
+    function showToast(text) {
+        const toast = document.createElement('div');
+        toast.setAttribute('data-pd-toast', '1');
+        toast.textContent = text;
+        toast.style.cssText = `
+            position: fixed; left: 0px; top: 0px; z-index: 2147483647;
+            color: #ff3b30; background: rgba(0,0,0,.85); padding: 10px 16px;
+            border-radius: 8px; font: bold 16px/1.4 sans-serif;
+            box-shadow: 0 2px 10px rgba(0,0,0,.4); visibility: hidden;
+        `;
+        document.body.appendChild(toast);
+        const gap = 12;
+        const tw = toast.offsetWidth;
+        const th = toast.offsetHeight;
+        const left = Math.max(4, Math.min(lastX - tw - gap, window.innerWidth - tw - 4));
+        const top = Math.max(4, Math.min(lastY + gap, window.innerHeight - th - 4));
+        toast.style.left = `${left}px`;
+        toast.style.top = `${top}px`;
+        toast.style.visibility = 'visible';
+        setTimeout(() => toast.remove(), 1000);
+    }
+
     // ПКМ по нужному элементу сразу подтверждает выбор — без отдельной кнопки.
     // Esc подтверждает "ничего не выбрано" (например, если названия нет).
     // Сам перехват ПКМ/Esc делает window.__pdCore (см. PICK_CORE_INIT_JS) —
@@ -193,6 +223,7 @@ PICK_OVERLAY_JS = r"""
                 scrollY: Math.round(rect.top + window.scrollY),
                 endScrollY: Math.round(rect.bottom + window.scrollY),
             };
+            showToast('Название выбрано');
         } else {
             window.__pdResult = null;
         }
@@ -210,7 +241,11 @@ PICK_OVERLAY_JS = r"""
         panel.style.top = `${top}px`;
     }
     positionPanel(0, 0);
-    window.addEventListener('mousemove', (e) => positionPanel(e.clientX, e.clientY), { capture: true, signal });
+    window.addEventListener('mousemove', (e) => {
+        lastX = e.clientX;
+        lastY = e.clientY;
+        positionPanel(e.clientX, e.clientY);
+    }, { capture: true, signal });
 
     // Подсветка элемента под курсором работает постоянно (ЛКМ при этом
     // свободна для обычного взаимодействия с сайтом — мы её не перехватываем).
@@ -311,6 +346,36 @@ PICK_LOOP_OVERLAY_JS = r"""
         el.style.outlineOffset = color ? '-3px' : '';
     }
 
+    let lastX = 0;
+    let lastY = 0;
+
+    // Короткое уведомление снизу-слева от курсора. Без атрибута MARK — иначе
+    // PICK_CLEANUP_JS (вызывается сразу после подтверждения выбора) удалит
+    // его мгновенно, не дав провисеть отведённую секунду. Помечено отдельным
+    // data-pd-toast — по нему make_main_screenshot прячет плашку на время
+    // снимка, чтобы она не попадала на скриншоты.
+    function showToast(text) {
+        const toast = document.createElement('div');
+        toast.setAttribute('data-pd-toast', '1');
+        toast.textContent = text;
+        toast.style.cssText = `
+            position: fixed; left: 0px; top: 0px; z-index: 2147483647;
+            color: #ff3b30; background: rgba(0,0,0,.85); padding: 10px 16px;
+            border-radius: 8px; font: bold 16px/1.4 sans-serif;
+            box-shadow: 0 2px 10px rgba(0,0,0,.4); visibility: hidden;
+        `;
+        document.body.appendChild(toast);
+        const gap = 12;
+        const tw = toast.offsetWidth;
+        const th = toast.offsetHeight;
+        const left = Math.max(4, Math.min(lastX - tw - gap, window.innerWidth - tw - 4));
+        const top = Math.max(4, Math.min(lastY + gap, window.innerHeight - th - 4));
+        toast.style.left = `${left}px`;
+        toast.style.top = `${top}px`;
+        toast.style.visibility = 'visible';
+        setTimeout(() => toast.remove(), 1000);
+    }
+
     // ПКМ по блоку сразу подтверждает его и добавляет в описание — без
     // отдельной кнопки "Подтвердить". Сам перехват ПКМ/Esc делает
     // window.__pdCore (см. PICK_CORE_INIT_JS) — он регистрируется через
@@ -351,6 +416,7 @@ PICK_LOOP_OVERLAY_JS = r"""
         };
         window.__pdAction = 'confirm';
         window.__pdConfirmed = true;
+        showToast('Описание выбрано');
     }
 
     // Esc заменяет кнопку "Завершить" — работает всегда, даже без выбранного
@@ -375,7 +441,11 @@ PICK_LOOP_OVERLAY_JS = r"""
         panel.style.top = `${top}px`;
     }
     positionPanel(0, 0);
-    window.addEventListener('mousemove', (e) => positionPanel(e.clientX, e.clientY), { capture: true, signal });
+    window.addEventListener('mousemove', (e) => {
+        lastX = e.clientX;
+        lastY = e.clientY;
+        positionPanel(e.clientX, e.clientY);
+    }, { capture: true, signal });
 
     // Подсветка элемента под курсором работает постоянно (ЛКМ при этом
     // свободна для обычного взаимодействия с сайтом — мы её не перехватываем).
@@ -447,7 +517,11 @@ def make_main_screenshot(page, path=None):
     """Делает скриншот и накладывает дату/время.
     path=None → сохраняет в back_dir/final_screenshot.png (поведение по умолчанию).
     """
+    # Прячем плашку "... выбрано" (data-pd-toast) на время снимка — она нужна
+    # только человеку в браузере, а не на итоговом скриншоте.
+    page.evaluate("document.querySelectorAll('[data-pd-toast]').forEach(el => el.style.visibility = 'hidden')")
     screenshot_bytes = page.screenshot(full_page=False)
+    page.evaluate("document.querySelectorAll('[data-pd-toast]').forEach(el => el.style.visibility = 'visible')")
     image = Image.open(BytesIO(screenshot_bytes))
     draw = ImageDraw.Draw(image)
 
