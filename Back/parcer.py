@@ -7,7 +7,7 @@ import textwrap
 import requests
 from io import BytesIO
 from datetime import datetime
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error
 from PIL import Image, ImageDraw, ImageFont
 from pathlib import Path
 
@@ -171,6 +171,29 @@ def open_site(p, url):
     return browser, page
 
 
+def _safe_evaluate(page, expression, default=None):
+    """page.evaluate, устойчивый к самопроизвольной навигации сайта.
+
+    Некоторые сайты (например Wildberries с targetUrl-редиректами) сами
+    уходят на другой URL прямо во время нашей прокрутки — тогда execution
+    context уничтожается и evaluate падает с "Execution context was
+    destroyed". Ждём, пока страница долетит до load, и пробуем ещё раз.
+    """
+    try:
+        return page.evaluate(expression)
+    except Error as e:
+        if "Execution context was destroyed" not in str(e) and "context was destroyed" not in str(e):
+            raise
+        try:
+            page.wait_for_load_state("load", timeout=15000)
+        except Error:
+            pass
+        try:
+            return page.evaluate(expression)
+        except Error:
+            return default
+
+
 def load_full_page(page, step=800, pause=200, max_scrolls=50):
     """Прокручивает страницу до самого низа и обратно наверх.
 
@@ -181,17 +204,21 @@ def load_full_page(page, step=800, pause=200, max_scrolls=50):
     """
     print("Прокрутка страницы до конца для подгрузки ленивого контента...")
     for _ in range(max_scrolls):
-        prev_y = page.evaluate("window.scrollY")
-        page.evaluate(f"window.scrollBy(0, {step})")
+        prev_y = _safe_evaluate(page, "window.scrollY", 0)
+        _safe_evaluate(page, f"window.scrollBy(0, {step})")
         page.wait_for_timeout(pause)
-        current_y = page.evaluate("window.scrollY")
-        at_bottom = page.evaluate("window.scrollY + window.innerHeight >= document.body.scrollHeight - 2")
+        current_y = _safe_evaluate(page, "window.scrollY", prev_y)
+        at_bottom = _safe_evaluate(
+            page,
+            "window.scrollY + window.innerHeight >= document.body.scrollHeight - 2",
+            False,
+        )
         if at_bottom or current_y == prev_y:
             break
     page.wait_for_timeout(400)
 
     print("Возврат в начало страницы...")
-    page.evaluate("window.scrollTo(0, 0)")
+    _safe_evaluate(page, "window.scrollTo(0, 0)")
     page.wait_for_timeout(400)
 
 
